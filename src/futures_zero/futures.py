@@ -53,6 +53,7 @@ class Futures:
 		self._pending_tasks = dict()
 		self._failed_tasks = dict()
 		self._fail_counter = defaultdict(int)
+		self._n_dead_workers = 0
 		
 
 	def print(self, s, lvl):
@@ -111,6 +112,8 @@ class Futures:
 		self.start_client()
 		self.start_server()
 
+		print('CLIENT ADDRESS: {}\n\n'.format(self.client_address))
+
 		self.server_client_online = True
 
 	def close(self):
@@ -132,6 +135,7 @@ class Futures:
 		self.results = dict()
 		self.errors = dict()
 		self._failed_tasks = dict()
+		self._n_dead_workers = 0
 		
 	
 
@@ -302,15 +306,9 @@ class Futures:
 		self._pending_tasks[key] = request
 		self._task_keys.add(key)
 
+	def _poll(self):
 
-	def get(self):
-
-		self.bar = ProgressBar()
-
-		self.bar.set_total(len(self._task_keys))
-		self.bar.report(0)
-
-		while len(self.results) + len(self.errors) < len(self._task_keys):
+		while len(self.results) + len(self.errors) + self._n_dead_workers < len(self._task_keys):
 
 			retries_left = REQUEST_RETRIES
 			
@@ -387,21 +385,38 @@ class Futures:
 
 				elif reply_payload[0]==WORKER_FAILURE_SIGNAL:
 
-					n_dead_workers = msgpack.unpackb(reply_payload[1], raw=False)
+					self._n_dead_workers += msgpack.unpackb(reply_payload[1], raw=False)
 
-					print('restarting workers')
+					self.start_workers(self._n_dead_workers)
 
-					self.start_workers(n_dead_workers)
 
-					returned_keys = list(self.errors.keys()) + list(self.results.keys())
 
-					# print(returned_keys, '+++')
+	def get(self):
 
-					# print(self._pending_tasks)
+		self.bar = ProgressBar()
 
-					unreturned_keys = [k for k, v in self._pending_tasks if k not in returned_keys]
+		self.bar.set_total(len(self._task_keys))
+		self.bar.report(0)
 
-					print('asdfasdfadsadsf')
+		self._poll()
+
+		if self._n_dead_workers > 0:
+
+			for key, request in self._pending_tasks.items():
+
+
+				self.client.send_multipart(request)  
+
+			print('POLLING AGAIN')
+
+
+
+			self._poll()
+
+
+		print('daddddd')
+
+
 
 					# print(unreturned_keys, '+++')
 

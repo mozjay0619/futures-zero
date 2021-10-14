@@ -16,15 +16,15 @@ class WorkerQueue(object):
     def __init__(self):
         self.queue = OrderedDict()
         self.busy_workers = list()
-        self.all_workers = list()
+        self.all_workers = dict()
 
     def ready(self, worker_address):
 
         self.queue.pop(worker_address, None)
         self.queue[worker_address] = Worker(worker_address)
 
-        if worker_address not in self.all_workers:
-            self.all_workers.append(worker_address)
+        # if worker_address not in self.all_workers:
+        self.all_workers[worker_address] = self.queue[worker_address]
 
     def busy(self, worker_address):
         """An extra contraption to fix the bug in the original code.
@@ -44,7 +44,7 @@ class WorkerQueue(object):
         t = time.time()
         expired = []
 
-        for address, worker in self.queue.items():
+        for address, worker in self.all_workers.items():
 
             if t > worker.expiry:  # Worker expired
                 expired.append(address)
@@ -53,7 +53,7 @@ class WorkerQueue(object):
 
             print("W: Idle worker expired: %s" % address)
             self.queue.pop(address, None)
-            self.all_workers.remove(address)
+            self.all_workers.pop(address, None)
 
         return expired
 
@@ -161,7 +161,7 @@ class ServerProcess(Process):
 
                     elif frames[2]==KILL_SIGNAL:
 
-                        for worker_address in workers.all_workers:
+                        for worker_address in workers.all_workers.keys():
 
                             msg = [worker_address, KILL_SIGNAL]
 
@@ -275,13 +275,19 @@ class ServerProcess(Process):
 
                 if len(dead_worker_addresses) > 0:
 
+
+                    self.print("6. DEAD WORKER(S) DETECTED: {}\n".format(dead_worker_addresses), 1)
+
                     binary_num_dead_workers = msgpack.packb(len(dead_worker_addresses), use_bin_type=True)
                     dummy_task_key = msgpack.packb(-1, use_bin_type=True)
 
                     frames = [self.client_address, dummy_task_key, WORKER_FAILURE_SIGNAL, binary_num_dead_workers]
 
-                    # [client_address, dummy_task_key, worker_failure_signal, num_dead_workers] 
+                    self.print("7. SENDING FROM SERVER TO CLIENT: {}\n".format(frames), 1)
+                    self.print("7. SENDING FROM SERVER TO CLIENT: [client_address, dummy_task_key, worker_failure_signal, num_dead_workers]\n\n", 1)
+
                     # The ROUTER socket will strip off the client address.
+                    # [client_address, dummy_task_key, worker_failure_signal, num_dead_workers] 
                     frontend.send_multipart(frames)    
 
         except KeyboardInterrupt:

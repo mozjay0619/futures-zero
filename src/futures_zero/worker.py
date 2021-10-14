@@ -24,6 +24,9 @@ def worker_socket(context, poller):
        connected to the Paranoid Pirate queue"""
     worker = context.socket(zmq.DEALER) # DEALER ~ requester
     identity = b"%04X-%04X" % (randint(0, 0x10000), randint(0, 0x10000))
+
+    print('WORKER STARTED: {}'.format(identity))
+
     worker.setsockopt(zmq.IDENTITY, identity)
     poller.register(worker, zmq.POLLIN)
     worker.connect(WORKER_ENDPOINT)
