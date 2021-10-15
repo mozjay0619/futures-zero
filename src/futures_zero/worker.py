@@ -8,6 +8,7 @@ import cloudpickle
 import msgpack
 import sys
 import numpy as np
+from zmq.error import ZMQError
 
 from .config import *
 
@@ -24,9 +25,6 @@ def worker_socket(context, poller):
        connected to the Paranoid Pirate queue"""
     worker = context.socket(zmq.DEALER) # DEALER ~ requester
     identity = b"%04X-%04X" % (randint(0, 0x10000), randint(0, 0x10000))
-
-    print('WORKER STARTED: {}'.format(identity))
-
     worker.setsockopt(zmq.IDENTITY, identity)
     poller.register(worker, zmq.POLLIN)
     worker.connect(WORKER_ENDPOINT)
@@ -60,9 +58,11 @@ class WorkerProcess(Process):
         heartbeat_at = time.time() + HEARTBEAT_INTERVAL
 
         identity, worker = worker_socket(context, poller)
-        cycles = 0
+        self.print('WORKER STARTED: {}'.format(identity), 1)
 
         try:
+
+            perform_final = True
         
             while True:
 
@@ -220,7 +220,7 @@ class WorkerProcess(Process):
                     if liveness == 0:
 
                         print("W: Heartbeat failure, can't reach queue")
-                        print("W: Reconnecting in %0.2fs..." % interval)
+                        
                         time.sleep(interval)
 
                         if interval < INTERVAL_MAX:
@@ -228,9 +228,10 @@ class WorkerProcess(Process):
                         poller.unregister(worker)
                         worker.setsockopt(zmq.LINGER, 0)
                         worker.close()
-                        identity, worker  = worker_socket(context, poller)
-                        print('OH SHIT')
-                        liveness = HEARTBEAT_LIVENESS
+
+
+                        print("Shutting worker down")
+                        
                         
                 if time.time() > heartbeat_at:
 
@@ -239,25 +240,41 @@ class WorkerProcess(Process):
                     self.print("5. SENDING FROM WORKER {} TO SERVER: HEARTBEAT\n".format(identity), -1)
 
                     heartbeat_at = time.time() + HEARTBEAT_INTERVAL
+
+            
         
         except KeyboardInterrupt:
             
 
             print('E: Keyboard Interrupted')
+
+            perform_final = True
+
+        except ZMQError:
+
+            print('OHHH SHIT')
+
+            perform_final = False
         
         except Exception as e:
             
-            print('Exception', str(e))
+            print('Exception!!!', repr(e))
 
             reply_frame = frames[:2] + [TASK_FAILURE_SIGNAL] + task_payload
 
             worker.send_multipart(reply_frame)
+
+            perform_final = True
+
+        
             
         finally:
             
-            poller.unregister(worker)
-            worker.setsockopt(zmq.LINGER, 0)
-            worker.close()
-            context.term()
-            
+            if perform_final:
+
+                poller.unregister(worker)
+                worker.setsockopt(zmq.LINGER, 0)
+                worker.close()
+                context.term()
+                
 

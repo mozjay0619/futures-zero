@@ -118,60 +118,7 @@ class ServerProcess(Process):
                 # Start listening to client/workers (blocking)
                 socks = dict(poller.poll(HEARTBEAT_INTERVAL * 1000))
 
-                # Get message from the frontend client.
-                if socks.get(frontend) == zmq.POLLIN:
-
-                    # The DEALER socket prepended the client address.
-                    # [client_address, task_key, task_mode_signal, start_method_signal, func_statefulness_signal, func, args] or
-                    # [client_address, task_key, kill_signal]
-                    frames = frontend.recv_multipart()
-
-                    # Interrupted
-                    if not frames:
-                        self.print_1("2. RECEIVED IN SERVER FROM CLIENT: NULL\n\n")
-                        break
-
-                    if frames[2] in [
-                        NORMAL_TASK_REQUEST_SIGNAL, 
-                        PANDAS_PARTITION_TASK_REQUEST_SIGNAL, 
-                        PANDAS_NONPARTITION_TASK_REQUEST_SIGNAL
-                        ]:
-
-                        self.print("2. RECEIVED IN SERVER FROM CLIENT: {}\n".format(frames), 2)
-                        self.print("2. RECEIVED IN SERVER FROM CLIENT: [client_address, task_key, task_mode_signal, " \
-                            "start_method_signal, func_statefulness_signal, func, args]\n\n", 1)
-
-                        # Get the address of LRU worker
-                        address = workers.next()
-
-                        # Prepend the LRU worker address.
-                        # [worker_address, client_address, task_key, task_mode_signal, start_method_signal, func_statefulness_signal, func, args]
-                        frames.insert(0, address)
-
-                        self.print("3. SENDING FROM SERVER TO WORKER: {}\n".format(frames), 2)
-                        self.print("3. SENDING FROM SERVER TO WORKER: [worker_address, client_address, task_key, task_mode_signal, " \
-                            "start_method_signal, func_statefulness_signal, func, args]\n\n", 1)
-
-                        # The ROUTER will strip off the worker address from the frames and save it in 
-                        # hash table, associating it with the worker socket.
-                        # [worker_address, client_address, task_key, task_mode_signal, start_method_signal, func_statefulness_signal, func, args]
-                        backend.send_multipart(frames)
-
-                        workers.busy(address)
-
-                    elif frames[2]==KILL_SIGNAL:
-
-                        for worker_address in workers.all_workers.keys():
-
-                            msg = [worker_address, KILL_SIGNAL]
-
-                            # The ROUTER will strip off the worker address from the frames and save it in 
-                            # hash table, associating it with the worker socket.
-                            # [worker_address, kill_signal]
-                            backend.send_multipart(msg)
-
-                        break
-
+                
                 # Get message from the backend worker.
                 if socks.get(backend) == zmq.POLLIN:
                     
@@ -269,6 +216,61 @@ class ServerProcess(Process):
 
                         # Update the next heartbeat time.
                         heartbeat_at = time.time() + HEARTBEAT_INTERVAL
+
+                # Get message from the frontend client.
+                if socks.get(frontend) == zmq.POLLIN:
+
+                    # The DEALER socket prepended the client address.
+                    # [client_address, task_key, task_mode_signal, start_method_signal, func_statefulness_signal, func, args] or
+                    # [client_address, task_key, kill_signal]
+                    frames = frontend.recv_multipart()
+
+                    # Interrupted
+                    if not frames:
+                        self.print_1("2. RECEIVED IN SERVER FROM CLIENT: NULL\n\n")
+                        break
+
+                    if frames[2] in [
+                        NORMAL_TASK_REQUEST_SIGNAL, 
+                        PANDAS_PARTITION_TASK_REQUEST_SIGNAL, 
+                        PANDAS_NONPARTITION_TASK_REQUEST_SIGNAL
+                        ]:
+
+                        self.print("2. RECEIVED IN SERVER FROM CLIENT: {}\n".format(frames), 2)
+                        self.print("2. RECEIVED IN SERVER FROM CLIENT: [client_address, task_key, task_mode_signal, " \
+                            "start_method_signal, func_statefulness_signal, func, args]\n\n", 1)
+
+                        # Get the address of LRU worker
+                        address = workers.next()
+
+                        # Prepend the LRU worker address.
+                        # [worker_address, client_address, task_key, task_mode_signal, start_method_signal, func_statefulness_signal, func, args]
+                        frames.insert(0, address)
+
+                        self.print("3. SENDING FROM SERVER TO WORKER: {}\n".format(frames), 2)
+                        self.print("3. SENDING FROM SERVER TO WORKER: [worker_address, client_address, task_key, task_mode_signal, " \
+                            "start_method_signal, func_statefulness_signal, func, args]\n\n", 1)
+
+                        # The ROUTER will strip off the worker address from the frames and save it in 
+                        # hash table, associating it with the worker socket.
+                        # [worker_address, client_address, task_key, task_mode_signal, start_method_signal, func_statefulness_signal, func, args]
+                        backend.send_multipart(frames)
+
+                        workers.busy(address)
+
+                    elif frames[2]==KILL_SIGNAL:
+
+                        for worker_address in workers.all_workers.keys():
+
+                            msg = [worker_address, KILL_SIGNAL]
+
+                            # The ROUTER will strip off the worker address from the frames and save it in 
+                            # hash table, associating it with the worker socket.
+                            # [worker_address, kill_signal]
+                            backend.send_multipart(msg)
+
+                        break
+
 
                 # Detect the dead workers that did not send heartbeat for a fixed period of time.
                 dead_worker_addresses = workers.purge()

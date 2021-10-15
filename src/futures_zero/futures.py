@@ -112,7 +112,7 @@ class Futures:
 		self.start_client()
 		self.start_server()
 
-		print('CLIENT ADDRESS: {}\n\n'.format(self.client_address))
+		self.print('CLIENT STARTED: {}\n\n'.format(self.client_address), 1)
 
 		self.server_client_online = True
 
@@ -126,6 +126,22 @@ class Futures:
 		self.client.send_multipart(frames)
 
 		self.server_client_online = False
+
+		close_start_time = time.time()
+
+		while any([proc.is_alive() for proc in self.worker_procs]) and time.time() - close_start_time < 1:
+
+			time.sleep(0.01)
+
+		for proc in self.worker_procs:
+
+			if proc.is_alive():
+
+				print('KILLING')
+
+				proc.terminate()
+
+		
 
 	def clean(self):
 
@@ -237,7 +253,7 @@ class Futures:
 
 		key = column or len(self._task_keys)
 
-		binary = self._serialize(key, func, *args, **kwargs)
+		binary = self._serialize(key, False, func, *args, **kwargs)
 		self._submit(key, binary)
 
 	def capply(self, func, column=None, *args, **kwargs):
@@ -245,6 +261,16 @@ class Futures:
 		pass
 
 	def submit(self, func, *args, __key__=None, __stateful__=False, **kwargs):
+
+		self.mode = 'normal'
+
+		if __key__ is None:
+			__key__ = len(self._task_keys)
+
+		binary = self._serialize(__key__, __stateful__, func, *args, **kwargs)
+		self._submit(__key__, binary)
+
+	def submit_stateful(self, func, *args, __key__=None, __stateful__=True, **kwargs):
 
 		self.mode = 'normal'
 
@@ -309,8 +335,6 @@ class Futures:
 	def _poll(self):
 
 		while len(self.results) + len(self.errors) + self._n_dead_workers < len(self._task_keys):
-
-			retries_left = REQUEST_RETRIES
 			
 			# Start listening to replies from the server
 			if (self.client.poll(REQUEST_TIMEOUT) & zmq.POLLIN) != 0:
@@ -333,19 +357,22 @@ class Futures:
 
 					self.print("8. RECEIVED FROM SERVER IN CLIENT: {}\n".format(reply), 2)
 					self.print("8. RECEIVED FROM SERVER IN CLIENT: [task_key, task_success_signal, result]\n\n", 1)
-					
-					self._pending_tasks.pop(task_key, None)
-					self.results[task_key] = msgpack.unpackb(reply_payload[1], raw=False)
 
-					retries_left = REQUEST_RETRIES
+					# Recover the returned data.
+					result = msgpack.unpackb(reply_payload[1], raw=False)
+
+					self.bar.report(len(self.results))
+
+					self._pending_tasks.pop(task_key, None)
+
+					self.results[task_key] = result
 
 				elif reply_payload[0]==NUMPY_TASK_SUCCESS_SIGNAL:
 
 					self.print("8. RECEIVED IN CLIENT FROM SERVER: {}\n".format(reply), 2)
 					self.print("8. RECEIVED IN CLIENT FROM SERVER: [task_key, numpy_task_success_signal, metadata, result]\n\n", 1)
 
-					self.bar.report(len(self.results))
-					self._pending_tasks.pop(task_key, None)
+					# Recover the numpy array from the binary stream.
 					metadata = msgpack.unpackb(reply_payload[1], raw=False)
 					buf = memoryview(reply_payload[2])
 					result = np.frombuffer(buf, dtype=metadata['dtype'])
@@ -358,9 +385,11 @@ class Futures:
 					
 								self.dataframe[task_key] = result
 
-					elif self.mode=='normal':
+					self.bar.report(len(self.results))
+						
+					self._pending_tasks.pop(task_key, None)
 
-						self.results[task_key] = result
+					self.results[task_key] = result
 
 				elif reply_payload[0]==TASK_FAILURE_SIGNAL:
 
@@ -389,6 +418,8 @@ class Futures:
 
 					self.start_workers(self._n_dead_workers)
 
+			# self.bar.report(len(self.results))
+
 
 
 	def get(self):
@@ -409,58 +440,12 @@ class Futures:
 
 			print('POLLING AGAIN')
 
-
+			self._n_dead_workers = 0
 
 			self._poll()
 
 
-		print('daddddd')
-
-
-
-					# print(unreturned_keys, '+++')
-
-					# for task_key in unreturned_keys:
-
-					# 	self.errors[task_key] = 'Dead worker'
-
-					# 	self._failed_tasks[task_key] = self._pending_tasks.pop(task_key, None)
-
-					# print('HO OHIST', unreturned_keys)
-						
-				
-
-				# print('===')
-
-				# retries_left -= 1
-				# # logging.warning("No response from server")
-
-				# print("we down here")
-				# Socket is confused. Close and remove it.
-				# self.client.setsockopt(zmq.LINGER, 0)
-				# self.client.close()
-
-				# if retries_left >= 0:
-				# 	# logging.error("Server seems to be offline, abandoning")
-				# 	# sys.exit()
-
-				# 	print('RESENDING', retries_left)
-
-				# 	reply[0] = TASK_REQUEST_SIGNAL
-				# 	self.client.send_multipart(reply)
-
-					
-
-
-
-				# logging.info("Reconnecting to server…")
-				# # Create new connection
-				# self.client = self.context.socket(zmq.REQ)
-				# self.client.connect(SERVER_ENDPOINT)
-				# logging.info("Resending (%s)", request)
-				# self.client.send_multipart(request)
-
-			self.bar.report(len(self.results))
+		
 
 		if len(self.results) == len(self._task_keys):
 
@@ -474,16 +459,8 @@ class Futures:
 
 			return list(self.results.values())
 
-		# elif self.mode=='pandas':
+		elif self.mode=='pandas':
 
-		# 	if self.sub_mode=='nonpartition':
-
-		# 		for k, v in self.results.items():
-
-		# 			if (isinstance(v, np.ndarray)) & (len(v)==len(self.dataframe)) & (not isinstance(k, int)):
-					
-		# 				self.dataframe[k] = v
-
-		# 	return self.dataframe
+			return self.dataframe
 
 
