@@ -37,7 +37,7 @@ class WorkerProcess(Process):
     out the requested computations in parallel. The user function can access its 
     state if needed.
 
-    
+    ++    
     """
     def __init__(self, __verbose__, __dataframe__=None):
         super(WorkerProcess, self).__init__()
