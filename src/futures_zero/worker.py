@@ -1,9 +1,9 @@
+import os
 import sys
 import time
 import warnings
 from multiprocessing import Process
 from random import randint
-import os
 
 import cloudpickle
 import msgpack
@@ -23,7 +23,6 @@ def worker_socket(context, poller):
     """Helper function that returns a new configured socket
     connected to the Paranoid Pirate queue"""
     identity = str(os.getpid()).encode()
-
     worker = context.socket(zmq.DEALER)  # DEALER ~ requester
     worker.setsockopt(zmq.IDENTITY, identity)
     poller.register(worker, zmq.POLLIN)
@@ -34,11 +33,10 @@ def worker_socket(context, poller):
 
 class WorkerProcess(Process):
     """The process for the worker client that connects to the server and carries
-    out the requested computations in parallel. The user function can access its 
+    out the requested computations in parallel. The user function can access its
     state if needed.
-
-    ++    
     """
+
     def __init__(self, __verbose__, __dataframe__=None):
         super(WorkerProcess, self).__init__()
 
@@ -65,7 +63,7 @@ class WorkerProcess(Process):
 
             while True:
 
-                socks = dict(poller.poll(WORKER_POLLING_TIMEOUT))  # in milliseconds
+                socks = dict(poller.poll())
 
                 # Get message from the proxy server.
                 if socks.get(worker) == zmq.POLLIN:
@@ -246,7 +244,7 @@ class WorkerProcess(Process):
                                 "5. SENDING FROM WORKER {} TO SERVER: [client_address, task_key, task_failure_signal, "
                                 "error]\n\n".format(identity),
                                 1,
-                            )   
+                            )
 
                         # The DEALER socket will prepend the worker address.
                         # [client_address, task_key, task_success_signal, result] or
@@ -280,7 +278,7 @@ class WorkerProcess(Process):
 
         finally:
 
-            self.print('GRACEFULLY TERMINATING WORKER {}'.format(identity), 1)
+            self.print("GRACEFULLY TERMINATING WORKER {}".format(identity), 1)
 
             if perform_final:
 

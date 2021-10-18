@@ -148,7 +148,6 @@ class Futures:
 		client the string address.
 		"""
 		self.client_address = str(os.getpid()).encode()
-
 		self.context = zmq.Context()
 		self.client = self.context.socket(zmq.DEALER)
 		self.client.setsockopt(zmq.IDENTITY, self.client_address)
@@ -177,7 +176,7 @@ class Futures:
 		frames = [DUMMY_TASK_KEY, KILL_SIGNAL]
 
 		# The DEALER socket will prepend the client address.
-		# [task_key, kill_signal]
+		# [dummy_task_key, kill_signal]
 		self.client.send_multipart(frames)
 
 		self.server_client_online = False
@@ -628,14 +627,19 @@ class Futures:
 
 						self._handle_failed_tasks(failed_task_key, "Premature worker death")
 
+			# Check the status of the child processes every REQUEST_TIMEOUT milliseconds.
 			worker_deaths = [not proc.is_alive() for proc in self.worker_procs]
 
+			# If any workers are dead, inform the server and start that many workers again.
 			if any(worker_deaths):
 
+				# Update the worker process list.
 				self.worker_procs = [proc for proc in self.worker_procs if proc.is_alive()]
 
 				frames = [DUMMY_TASK_KEY, WORKER_FAILURE_SIGNAL]
 
+				# The DEALER socket will prepend the client address.
+				# [dummy_task_key, worker_failure_signal]
 				self.client.send_multipart(frames)
 
 				self.start_workers(sum(worker_deaths))

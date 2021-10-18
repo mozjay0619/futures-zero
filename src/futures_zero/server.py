@@ -2,18 +2,19 @@ import time
 from collections import OrderedDict
 from multiprocessing import Process
 
-from .utils import check_pid
-
 import msgpack
 import zmq
 
+from .utils import check_pid
 from .config import *
 
 
-
-
-
 class WorkerQueue(object):
+    """Worker queue used by the server for load balancing. It uses
+    the list data structure for queue. It also keeps track of which 
+    worker is busy processing which task key. The set of all worker 
+    address is used by, for instance, kill command.
+    """
     def __init__(self):
         self.free_workers = list()
         self.busy_workers = dict()
@@ -25,7 +26,6 @@ class WorkerQueue(object):
             self.free_workers.remove(worker_address)
 
         self.free_workers.append(worker_address)
-
         self.all_workers.add(worker_address)
         
     def busy(self, worker_address, task_key):
@@ -37,11 +37,17 @@ class WorkerQueue(object):
         self.busy_workers.pop(worker_address, None)
 
     def next(self):
+
         address = self.free_workers.pop(False)
         return address
 
     def purge(self):
-
+        """Only called when the client detects dead worker processes.
+        It purges any record of the dead worker from the queue's state.
+        Also, it will retrieve the tasks that those dead workers were 
+        unable to finish processing in ``unfinished_tasks`` and pass
+        them along to the client for further instructions.
+        """
         unfinished_tasks = []
 
         all_workers = self.all_workers.copy()
@@ -304,6 +310,14 @@ class ServerProcess(Process):
 
                     elif frames[2] == KILL_SIGNAL:
 
+                        self.print(
+                            "*. RECEIVED IN SERVER FROM CLIENT: {}\n".format(frames), 2
+                        )
+                        self.print(
+                            "*. RECEIVED IN SERVER FROM CLIENT: [client_address, dummy_task_key, kill_signal]\n\n",
+                            1,
+                        )
+
                         for worker_address in workers.all_workers:
 
                             msg = [worker_address, KILL_SIGNAL]
@@ -316,6 +330,14 @@ class ServerProcess(Process):
                         break
 
                     elif frames[2] == WORKER_FAILURE_SIGNAL:
+
+                        self.print(
+                            "5. RECEIVED IN SERVER FROM CLIENT: {}\n".format(frames), 2
+                        )
+                        self.print(
+                            "5. RECEIVED IN SERVER FROM CLIENT: [client_address, dummy_task_key, worker_failure_signal]\n\n",
+                            1,
+                        )
 
                         failed_task_keys = workers.purge()
                         failed_task_keys = msgpack.packb(failed_task_keys, use_bin_type=True)

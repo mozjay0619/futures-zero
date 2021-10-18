@@ -1,5 +1,6 @@
-import time
 import os
+import time
+
 
 class ProgressBar:
     def __init__(self):
@@ -30,8 +31,9 @@ class ProgressBar:
         if iteration == total and suffix == "Completed!":
             print(f"\r", end="\n")
 
-def check_pid(pid):        
-    """ Check For the existence of a unix pid. """
+
+def check_pid(pid):
+    """Check For the existence of a unix pid."""
     try:
         os.kill(pid, 0)
     except OSError:

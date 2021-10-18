@@ -1,11 +1,8 @@
-WORKER_POLLING_TIMEOUT = 2500
-
-REQUEST_TIMEOUT = 1000
+REQUEST_TIMEOUT = 5000
 REQUEST_RETRIES = 2
 
 #  Paranoid Pirate Protocol constants
 WORKER_READY_SIGNAL = b"\x01"  # Signals worker is ready
-HEARTBEAT_SIGNAL = b"\x02"  # Signals worker heartbeat
 KILL_SIGNAL = b"\x03"
 
 # Task modes signals
