@@ -2,74 +2,79 @@ import time
 from collections import OrderedDict
 from multiprocessing import Process
 
+from .utils import check_pid
+
 import msgpack
 import zmq
 
 from .config import *
 
 
-class Worker(object):
-    def __init__(self, address):
-        self.address = address
-        self.expiry = time.time() + HEARTBEAT_INTERVAL * HEARTBEAT_LIVENESS
+
 
 
 class WorkerQueue(object):
     def __init__(self):
-        self.queue = OrderedDict()
-        self.busy_workers = list()
-        self.all_workers = dict()
-        self.worker_task_pair = dict()
-
-    def register(self, address, task_key):
-        self.worker_task_pair[address] = task_key
+        self.free_workers = list()
+        self.busy_workers = dict()
+        self.all_workers = set()
 
     def ready(self, worker_address):
 
-        self.queue.pop(worker_address, None)
-        self.queue[worker_address] = Worker(worker_address)
+        if worker_address in self.free_workers:
+            self.free_workers.remove(worker_address)
 
-        # if worker_address not in self.all_workers:
-        self.all_workers[worker_address] = self.queue[worker_address]
+        self.free_workers.append(worker_address)
 
+        self.all_workers.add(worker_address)
+        
     def busy(self, worker_address, task_key):
-        """An extra contraption to fix the bug in the original code.
-        The edge case bug occurs when a worker is given a task request
-        but on the same cycle sends back heartbeat. This will cause the
-        server to expire the worker if the task takes too long.
 
-        """
-        self.busy_workers.append(worker_address)
-        self.worker_task_pair[worker_address] = task_key
+        self.busy_workers[worker_address] = task_key
 
     def free(self, worker_address):
-        self.busy_workers.remove(worker_address)
-        self.worker_task_pair.pop(worker_address, None)
-
-    def purge(self):
-        """Look for & kill expired workers."""
-        t = time.time()
-        expired = []
-
-        for address, worker in self.all_workers.items():
-
-            if t > worker.expiry:  # Worker expired
-                expired.append(address)
-
-        for address in expired:
-
-            print("W: Idle worker expired: %s" % address)
-            self.queue.pop(address, None)
-            self.all_workers.pop(address, None)
-
-        return expired
+        
+        self.busy_workers.pop(worker_address, None)
 
     def next(self):
-        address, worker = self.queue.popitem(False)
+        address = self.free_workers.pop(False)
         return address
+
+    def purge(self):
+
+        unfinished_tasks = []
+
+        all_workers = self.all_workers.copy()
+        for address in all_workers:
+
+            pid = int(address.decode())
+            if not check_pid(pid):
+
+                if address in self.free_workers:
+                    self.free_workers.remove(address)
+
+                if address in self.busy_workers:
+                    task_key = self.busy_workers.pop(address)
+                    unfinished_tasks.append(task_key)
+
+                if address in self.all_workers:
+                    self.all_workers.remove(address)
+
+        return unfinished_tasks
 
 
 class ServerProcess(Process):
+    """The Proxy Server that the Futures client and worker clients connect to. 
+    It uses asynchronous messaging queues to communicate with clients. Its main
+    functionality is load balancing, which is implemented as a queue of LRU workers
+    (refer to ``WorkerQueue``).
+
+    Parameters
+    ----------
+    client_address : 
+
+    verbose : 
+    """
     def __init__(self, client_address, verbose):
         super(ServerProcess, self).__init__()
 
@@ -105,8 +110,6 @@ class ServerProcess(Process):
         # Queue of LRU workers
         workers = WorkerQueue()
 
-        heartbeat_at = time.time()  # + HEARTBEAT_INTERVAL
-
         try:
 
             # Flag for the ``finally`` clause.
@@ -116,20 +119,19 @@ class ServerProcess(Process):
 
                 # If workers queue is empty, we wait for workers to send the initial
                 # WORKER_READY_SIGNAL signal so we can queue the ready workers.
-                if len(workers.queue) > 0:
+                if len(workers.free_workers) > 0:
                     poller = poll_both
                 else:
                     poller = poll_workers
 
-                # Start listening to client/workers (blocking for HEARTBEAT_INTERVAL seconds)
-                socks = dict(poller.poll(HEARTBEAT_INTERVAL * 1000))  # in milliseconds
+                # Start listening to client/workers (blocking)
+                socks = dict(poller.poll()) 
 
                 # Get message from the backend worker.
                 if socks.get(backend) == zmq.POLLIN:
 
                     # [worker_address, client_address, task_key, task_success_signal, result] or
                     # [worker_address, client_address, task_key, task_failure_signal, error] or
-                    # [worker_address, heartbeat_signal] or
                     # [worker_address, worker_ready_signal]
                     # The DEALER socket prepended the worker address.
                     frames = backend.recv_multipart()
@@ -149,7 +151,6 @@ class ServerProcess(Process):
                     # The worker reply payload.
                     # [client_address, task_key, task_success_signal, result] or
                     # [client_address, task_key, task_failure_signal, error] or
-                    # [heartbeat_signal] or
                     # [worker_ready_signal]
                     reply_payload = frames[1:]
 
@@ -157,16 +158,7 @@ class ServerProcess(Process):
 
                         if reply_payload[0] == WORKER_READY_SIGNAL:
 
-                            # Update worker expiry time.
                             workers.ready(address)
-
-                        elif reply_payload[0] == HEARTBEAT_SIGNAL:
-
-                            # Ignore this heartbeat if the worker is busy with a task.
-                            if address not in workers.busy_workers:
-
-                                # Update worker expiry time.
-                                workers.ready(address)
 
                         else:
 
@@ -248,7 +240,6 @@ class ServerProcess(Process):
 
                         # Remove the worker from busy list.
                         workers.free(address)
-                        # Update worker expiry time.
                         workers.ready(address)
 
                         # [client_address, task_key, task_success_signal, result] or
@@ -262,11 +253,12 @@ class ServerProcess(Process):
                     # The DEALER socket prepended the client address.
                     # [client_address, task_key, task_mode_signal, start_method_signal, func_statefulness_signal, func, args] or
                     # [client_address, task_key, kill_signal]
+                    # [client_address, dummy_task_key, worker_failure_signal]
                     frames = frontend.recv_multipart()
 
                     # Interrupted
                     if not frames:
-                        self.print_1("2. RECEIVED IN SERVER FROM CLIENT: NULL\n\n")
+                        self.print("2. RECEIVED IN SERVER FROM CLIENT: NULL\n\n", 1)
                         break
 
                     if frames[2] in [
@@ -312,7 +304,7 @@ class ServerProcess(Process):
 
                     elif frames[2] == KILL_SIGNAL:
 
-                        for worker_address in workers.all_workers.keys():
+                        for worker_address in workers.all_workers:
 
                             msg = [worker_address, KILL_SIGNAL]
 
@@ -323,69 +315,14 @@ class ServerProcess(Process):
 
                         break
 
-                # Send heartbeats to idle workers if it's time.
-                if time.time() >= heartbeat_at:
+                    elif frames[2] == WORKER_FAILURE_SIGNAL:
 
-                    for worker_address, worker in workers.queue.items():
+                        failed_task_keys = workers.purge()
+                        failed_task_keys = msgpack.packb(failed_task_keys, use_bin_type=True)
 
-                        msg = [worker_address, HEARTBEAT_SIGNAL]
+                        msg = [self.client_address, DUMMY_TASK_KEY, WORKER_FAILURE_SIGNAL, failed_task_keys]
 
-                        # The ROUTER socket will strip off the worker address.
-                        # [worker_address, heartbeat_signal]
-                        backend.send_multipart(msg)
-
-                    # Update the next heartbeat time.
-                    heartbeat_at = time.time() + HEARTBEAT_INTERVAL
-
-                # Detect the dead workers that did not send heartbeat for a fixed period of time.
-                dead_worker_addresses = workers.purge()
-
-                if len(dead_worker_addresses) > 0:
-
-                    self.print(
-                        "6. DEAD WORKER(S) DETECTED: {}\n".format(
-                            dead_worker_addresses
-                        ),
-                        1,
-                    )
-
-                    binary_num_dead_workers = msgpack.packb(
-                        len(dead_worker_addresses), use_bin_type=True
-                    )
-
-                    failed_task_keys = list()
-
-                    for address in dead_worker_addresses:
-
-                        failed_task_key = workers.worker_task_pair.pop(address, None)
-                        failed_task_keys.append(failed_task_key)
-
-                    failed_task_keys_bin = msgpack.packb(
-                        failed_task_keys, use_bin_type=True
-                    )
-
-                    dummy_task_key = msgpack.packb(-1, use_bin_type=True)
-
-                    frames = [
-                        self.client_address,
-                        dummy_task_key,
-                        WORKER_FAILURE_SIGNAL,
-                        binary_num_dead_workers,
-                        failed_task_keys_bin,
-                    ]
-
-                    self.print(
-                        "7. SENDING FROM SERVER TO CLIENT: {}\n".format(frames), 1
-                    )
-                    self.print(
-                        "7. SENDING FROM SERVER TO CLIENT: [client_address, dummy_task_key, worker_failure_signal, "
-                        "num_dead_workers, failed_task_keys_bin]\n\n",
-                        1,
-                    )
-
-                    # The ROUTER socket will strip off the client address.
-                    # [client_address, dummy_task_key, worker_failure_signal, num_dead_workers, failed_task_keys]
-                    frontend.send_multipart(frames)
+                        frontend.send_multipart(msg)
 
         except KeyboardInterrupt:
 

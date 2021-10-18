@@ -3,6 +3,7 @@ import time
 import warnings
 from multiprocessing import Process
 from random import randint
+import os
 
 import cloudpickle
 import msgpack
@@ -21,8 +22,9 @@ class TASK_FAILED(UserWarning):
 def worker_socket(context, poller):
     """Helper function that returns a new configured socket
     connected to the Paranoid Pirate queue"""
+    identity = str(os.getpid()).encode()
+
     worker = context.socket(zmq.DEALER)  # DEALER ~ requester
-    identity = b"%04X-%04X" % (randint(0, 0x10000), randint(0, 0x10000))
     worker.setsockopt(zmq.IDENTITY, identity)
     poller.register(worker, zmq.POLLIN)
     worker.connect(WORKER_ENDPOINT)
@@ -31,7 +33,13 @@ def worker_socket(context, poller):
 
 
 class WorkerProcess(Process):
-    def __init__(self, __verbose__, __dataframe__=None, out_dim=None):
+    """The process for the worker client that connects to the server and carries
+    out the requested computations in parallel. The user function can access its 
+    state if needed.
+
+    
+    """
+    def __init__(self, __verbose__, __dataframe__=None):
         super(WorkerProcess, self).__init__()
 
         self.verbose = __verbose__
@@ -47,10 +55,6 @@ class WorkerProcess(Process):
         context = zmq.Context(1)
         poller = zmq.Poller()
 
-        liveness = HEARTBEAT_LIVENESS
-        interval = INTERVAL_INIT
-        heartbeat_at = time.time() + HEARTBEAT_INTERVAL
-
         identity, worker = worker_socket(context, poller)
         self.print("WORKER STARTED: {}".format(identity), 1)
 
@@ -61,7 +65,7 @@ class WorkerProcess(Process):
 
             while True:
 
-                socks = dict(poller.poll(HEARTBEAT_INTERVAL * 1000))  # in milliseconds
+                socks = dict(poller.poll(WORKER_POLLING_TIMEOUT))  # in milliseconds
 
                 # Get message from the proxy server.
                 if socks.get(worker) == zmq.POLLIN:
@@ -69,7 +73,6 @@ class WorkerProcess(Process):
                     # The ROUTER socket strips the worker_address.
                     # [client_address, task_key, task_mode_signal, start_method_signal, func_statefulness_signal, func, args] or
                     # [kill_signal] or
-                    # [heartbeat_signal] from the proxy server.
                     frames = worker.recv_multipart()
 
                     # Interrupted
@@ -82,12 +85,8 @@ class WorkerProcess(Process):
                         )
                         break
 
-                    # Regular heartbeat from the proxy server to check that the server is alive.
-                    if len(frames) == 1 and frames[0] == HEARTBEAT_SIGNAL:
-                        liveness = HEARTBEAT_LIVENESS
-
                     # Kill signal from the frontend client.
-                    elif len(frames) == 1 and frames[0] == KILL_SIGNAL:
+                    if len(frames) == 1 and frames[0] == KILL_SIGNAL:
                         break
 
                     # Task request from the frontend client.
@@ -127,6 +126,7 @@ class WorkerProcess(Process):
                         # Try to catch user function exception without disturbing the process if possible.
                         try:
 
+                            # Run the user ``func``.
                             if task_properties[0] == NORMAL_TASK_REQUEST_SIGNAL:
 
                                 if task_properties[2] == STATEFUL_METHOD_SIGNAL:
@@ -168,6 +168,8 @@ class WorkerProcess(Process):
 
                                 raise ValueError("Invalid task_model_signal.")
 
+                            # Communicate the results back to the server.
+                            # If the result is a numpy n-dim array, use memory buffer for communication.
                             if isinstance(result, np.ndarray):
 
                                 metadata = dict(
@@ -204,10 +206,6 @@ class WorkerProcess(Process):
                                     TASK_SUCCESS_SIGNAL,
                                     result_binary,
                                 ]
-
-                                # # [client_address, task_key, task_success_signal, result]
-                                # # The DEALER socket will prepend the worker address.
-                                # worker.send_multipart(reply_frame)
 
                                 self.print(
                                     "5. SENDING FROM WORKER {} TO SERVER: {}\n".format(
@@ -248,53 +246,17 @@ class WorkerProcess(Process):
                                 "5. SENDING FROM WORKER {} TO SERVER: [client_address, task_key, task_failure_signal, "
                                 "error]\n\n".format(identity),
                                 1,
-                            )
+                            )   
 
+                        # The DEALER socket will prepend the worker address.
                         # [client_address, task_key, task_success_signal, result] or
                         # [client_address, task_key, numpy_task_success_signal, result] or
                         # [client_address, task_key, task_failure_signal, error]
-                        # The DEALER socket will prepend the worker address.
                         worker.send_multipart(reply_frame)
-
-                        liveness = HEARTBEAT_LIVENESS
 
                     else:
 
                         raise ValueError("Invalid message")
-
-                    interval = INTERVAL_INIT
-
-                else:
-
-                    liveness -= 1
-
-                    print('AAAAAAA {}\n\n'.format(identity))
-
-                    if liveness == 0:
-
-                        self.print(
-                            "Heartbeat failure, can't reach queue. Shutting down worker {}.".format(
-                                identity
-                            ),
-                            1,
-                        )
-
-                        poller.unregister(worker)
-                        worker.setsockopt(zmq.LINGER, 0)
-                        worker.close()
-
-                if time.time() > heartbeat_at:
-
-                    worker.send(HEARTBEAT_SIGNAL)
-
-                    self.print(
-                        "5. SENDING FROM WORKER {} TO SERVER: HEARTBEAT\n".format(
-                            identity
-                        ),
-                        1,
-                    )
-
-                    heartbeat_at = time.time() + HEARTBEAT_INTERVAL
 
         except KeyboardInterrupt:
 
@@ -317,6 +279,8 @@ class WorkerProcess(Process):
             perform_final = True
 
         finally:
+
+            self.print('GRACEFULLY TERMINATING WORKER {}'.format(identity), 1)
 
             if perform_final:
 

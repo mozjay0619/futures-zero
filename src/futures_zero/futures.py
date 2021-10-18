@@ -84,6 +84,8 @@ class Futures:
 		self.worker_args = worker_args
 		self.worker_kwargs = worker_kwargs
 
+		self.worker_procs = []
+
 		if n_workers is None:
 
 			self.n_workers = psutil.cpu_count(logical=False)
@@ -113,8 +115,6 @@ class Futures:
 		n_workers : int
 				The number of worker processes to use.
 		"""
-		self.worker_procs = []
-
 		for _ in range(n_workers):
 
 			if self.worker is not None:
@@ -147,9 +147,10 @@ class Futures:
 		"""Connect the client socket to the server endpoint. Assign the
 		client the string address.
 		"""
+		self.client_address = str(os.getpid()).encode()
+
 		self.context = zmq.Context()
 		self.client = self.context.socket(zmq.DEALER)
-		self.client_address = b"%04X-%04X" % (randint(0, 0x10000), randint(0, 0x10000))
 		self.client.setsockopt(zmq.IDENTITY, self.client_address)
 		self.client.connect(SERVER_ENDPOINT)
 
@@ -172,8 +173,8 @@ class Futures:
 		processes after the set timeout, those processes are forcefully
 		terminated.
 		"""
-		dummy_task_key = msgpack.packb(-1, use_bin_type=True)
-		frames = [dummy_task_key, KILL_SIGNAL]
+		
+		frames = [DUMMY_TASK_KEY, KILL_SIGNAL]
 
 		# The DEALER socket will prepend the client address.
 		# [task_key, kill_signal]
@@ -471,13 +472,20 @@ class Futures:
 
 		# The DEALER socket will prepend the client address.
 		# [task_key, task_mode_signal, start_method_signal, func_statefulness_signal, func, args]
-		self.client.send_multipart(request)
+		try:
+			self.client.send_multipart(request)
+
+		except:
+			print(request, 'AAAA')
 
 		self._pending_tasks[key] = request
 		self._task_keys.add(key)
 
 	def _handle_failed_tasks(self, task_key, error_msg):
-
+		"""Failed task retry mechanism. If the task has failed less than the set threshold counts,
+		re-submit the task. Otherwise, remove the task from pending tasks list and put it in the 
+		failed tasks list and record the error.
+		"""
 		self._fail_counter[task_key] += 1
 
 		if self._fail_counter[task_key] < REQUEST_RETRIES:
@@ -486,8 +494,6 @@ class Futures:
 				f"9. TASK {task_key} FAILED {self._fail_counter[task_key]} TIME(S), RETRYING\n\n",
 				1,
 			)
-
-			print(self._pending_tasks, '++++++')
 
 			self._submit(task_key, self._pending_tasks.pop(task_key, None))
 
@@ -509,9 +515,19 @@ class Futures:
 		of submitted tasks.
 
 		There are two types of successful signals:
-				- normal: the payload is deserialized using msgpack.
-				- numpy: the numpy array is reconstructed using memoryview from the memory buffer
+			- normal: the payload is deserialized using msgpack.
+			- numpy: the numpy array is reconstructed using memoryview from the memory buffer
+
+		There are two types of failure signals:
+			- task failure: error caused by the user ``func``.
+			- worker failure: error caused by death of the process itself.
+
+		The server cannot see the worker death and therefore the client from main process
+		will check if there are workers that are dead. If there are, it will start as many 
+		processes as they died. The tasks that were never completed by those processes will 
+		be re-submited.
 		"""
+
 		while len(self.results) + len(self.errors) < len(self._task_keys):
 
 			# Start listening to replies from the server
@@ -521,7 +537,7 @@ class Futures:
 				# The REQ socket stripped off the client address.
 				# [task_key, task_signal, error_msg, task_signal, task_signal, func, args] or
 				# [task_key, task_signal, result] or
-				# [dummy_task_key, worker_failure_signal, num_dead_workers]
+				# [dummy_task_key, worker_failure_signal, failed_task_keys]
 
 				task_key = msgpack.unpackb(reply[0], raw=False)  # task_key
 
@@ -529,111 +545,103 @@ class Futures:
 				# [task_success_signal, result]
 				# [numpy_task_success_signal, metadata, result]
 				# [task_signal, error_msg]
-				# [worker_failure_signal, binary_num_dead_workers]
+				# [worker_failure_signal, failed_task_keys]
 
-				# Handle successful tasks.
-				if reply_payload[0] in [TASK_SUCCESS_SIGNAL, NUMPY_TASK_SUCCESS_SIGNAL]:
 
-					# If the task is returning general python object(s), use msgpack to deserialize data.
-					if reply_payload[0] == TASK_SUCCESS_SIGNAL:
+				# If the task is returning general python object(s), use msgpack to deserialize data.
+				if reply_payload[0] == TASK_SUCCESS_SIGNAL:
 
-						self.print(f"8. RECEIVED FROM SERVER IN CLIENT: {reply}\n", 2)
-						self.print(
-							"8. RECEIVED FROM SERVER IN CLIENT: [task_key, task_success_signal, result]\n\n",
-							1,
-						)
+					self.print(f"8. RECEIVED FROM SERVER IN CLIENT: {reply}\n", 2)
+					self.print(
+						"8. RECEIVED FROM SERVER IN CLIENT: [task_key, task_success_signal, result]\n\n",
+						1,
+					)
 
-						# Recover the returned data.
-						result = msgpack.unpackb(reply_payload[1], raw=False)
+					# Recover the returned data.
+					result = msgpack.unpackb(reply_payload[1], raw=False)
 
-						self.bar.report(len(self.results))
+					self.bar.report(len(self.results))
 
-						# Remove the task from pending status only after checking the results.
-						self._pending_tasks.pop(task_key, None)
+					# Remove the task from pending status only after checking the results.
+					self._pending_tasks.pop(task_key, None)
 
-						self.results[task_key] = result
+					self.results[task_key] = result
 
-					# If the task returns a single numpy array, use memoryview and memory buffer to recover the data.
-					elif reply_payload[0] == NUMPY_TASK_SUCCESS_SIGNAL:
+				# If the task returns a single numpy array, use memoryview and memory buffer to recover the data.
+				elif reply_payload[0] == NUMPY_TASK_SUCCESS_SIGNAL:
 
-						self.print(f"8. RECEIVED IN CLIENT FROM SERVER: {reply}\n", 2)
-						self.print(
-							"8. RECEIVED IN CLIENT FROM SERVER: [task_key, numpy_task_success_signal, metadata, result]\n\n",
-							1,
-						)
+					self.print(f"8. RECEIVED IN CLIENT FROM SERVER: {reply}\n", 2)
+					self.print(
+						"8. RECEIVED IN CLIENT FROM SERVER: [task_key, numpy_task_success_signal, metadata, result]\n\n",
+						1,
+					)
 
-						# Recover the numpy array from the binary stream.
-						metadata = msgpack.unpackb(reply_payload[1], raw=False)
-						buf = memoryview(reply_payload[2])
-						result = np.frombuffer(buf, dtype=metadata["dtype"])
+					# Recover the numpy array from the binary stream.
+					metadata = msgpack.unpackb(reply_payload[1], raw=False)
+					buf = memoryview(reply_payload[2])
+					result = np.frombuffer(buf, dtype=metadata["dtype"])
 
-						# If ``capply`` was called, append the array as a column to the input dataframe.
-						if self.mode == "pandas" and self.sub_mode == "column":
+					# If ``capply`` was called, append the array as a column to the input dataframe.
+					if self.mode == "pandas" and self.sub_mode == "column":
 
-							if self.sub_mode == "nonpartition":
+						if self.sub_mode == "nonpartition":
 
-								if (
-									(isinstance(result, np.ndarray))
-									& (len(result) == len(self.dataframe))
-									& (not isinstance(task_key, int))
-								):
+							if (
+								(isinstance(result, np.ndarray))
+								& (len(result) == len(self.dataframe))
+								& (not isinstance(task_key, int))
+							):
 
-									self.dataframe[task_key] = result
+								self.dataframe[task_key] = result
 
-						self.bar.report(len(self.results))
+					self.bar.report(len(self.results))
 
-						# Remove the task from pending status only after checking the results.
-						self._pending_tasks.pop(task_key, None)
+					# Remove the task from pending status only after checking the results.
+					self._pending_tasks.pop(task_key, None)
 
-						self.results[task_key] = result
+					self.results[task_key] = result
 
-				# Handle failed tasks.
-				elif reply_payload[0] in [TASK_FAILURE_SIGNAL, WORKER_FAILURE_SIGNAL]:
+				elif reply_payload[0] == TASK_FAILURE_SIGNAL:
 
-					if reply_payload[0] == TASK_FAILURE_SIGNAL:
+					self.print(f"8. RECEIVED IN CLIENT FROM SERVER: {reply}\n", 2)
+					self.print(
+						"8. RECEIVED IN CLIENT FROM SERVER: [task_key, task_failure_signal, error]\n\n",
+						1,
+					)
 
-						self.print(f"8. RECEIVED IN CLIENT FROM SERVER: {reply}\n", 2)
-						self.print(
-							"8. RECEIVED IN CLIENT FROM SERVER: [task_key, task_failure_signal, error]\n\n",
-							1,
-						)
+					error_msg = msgpack.unpackb(reply_payload[1], raw=False)
 
-						error_msg = msgpack.unpackb(reply_payload[1], raw=False)
+					self._handle_failed_tasks(task_key, error_msg)
 
-						self._handle_failed_tasks(task_key, error_msg)
+				elif reply_payload[0] == WORKER_FAILURE_SIGNAL:
 
-					elif reply_payload[0] == WORKER_FAILURE_SIGNAL:
 
-						self.print(f"8. RECEIVED IN CLIENT FROM SERVER: {reply}\n", 2)
-						self.print(
-							"8. RECEIVED IN CLIENT FROM SERVER: [dummy_task_key, worker_failure_signal, "
-							"num_dead_workers, failed_task_keys]\n\n",
-							1,
-						)
+					self.print(f"8. RECEIVED IN CLIENT FROM SERVER: {reply}\n", 2)
+					self.print(
+						"8. RECEIVED IN CLIENT FROM SERVER: [dummy_task_key, worker_failure_signal, error]\n\n",
+						1,
+					)
 
-						n_dead_workers = msgpack.unpackb(reply_payload[1], raw=False)
+					failed_task_keys = msgpack.unpackb(reply_payload[1], raw=False)
 
-						failed_task_keys = msgpack.unpackb(reply_payload[2], raw=False)
+					for failed_task_key in failed_task_keys:
 
-						warning_msg = (
-							"task id(s) {} failed due to worker failure".format(
-								failed_task_keys
-							)
-						)
-						warnings.warn(warning_msg, WORKER_FAILED)
+						self._handle_failed_tasks(failed_task_key, "Premature worker death")
 
-						for _task_key in failed_task_keys:
+			worker_deaths = [not proc.is_alive() for proc in self.worker_procs]
 
-							print(_task_key, '+=========')
+			if any(worker_deaths):
 
-							self._handle_failed_tasks(
-								_task_key, "Worker premature death"
-							)
+				self.worker_procs = [proc for proc in self.worker_procs if proc.is_alive()]
 
-						self.start_workers(n_dead_workers)
+				frames = [DUMMY_TASK_KEY, WORKER_FAILURE_SIGNAL]
+
+				self.client.send_multipart(frames)
+
+				self.start_workers(sum(worker_deaths))
 
 	def get(self):
-		""" """
+		
 		self.bar = ProgressBar()
 		self.bar.set_total(len(self._task_keys))
 		self.bar.report(0)
