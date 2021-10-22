@@ -5,16 +5,17 @@ from multiprocessing import Process
 import msgpack
 import zmq
 
-from .utils import check_pid
 from .config import *
+from .utils import check_pid
 
 
 class WorkerQueue(object):
     """Worker queue used by the server for load balancing. It uses
-    the list data structure for queue. It also keeps track of which 
-    worker is busy processing which task key. The set of all worker 
+    the list data structure for queue. It also keeps track of which
+    worker is busy processing which task key. The set of all worker
     address is used by, for instance, kill command.
     """
+
     def __init__(self):
         self.free_workers = list()
         self.busy_workers = dict()
@@ -27,13 +28,13 @@ class WorkerQueue(object):
 
         self.free_workers.append(worker_address)
         self.all_workers.add(worker_address)
-        
+
     def busy(self, worker_address, task_key):
 
         self.busy_workers[worker_address] = task_key
 
     def free(self, worker_address):
-        
+
         self.busy_workers.pop(worker_address, None)
 
     def next(self):
@@ -44,7 +45,7 @@ class WorkerQueue(object):
     def purge(self):
         """Only called when the client detects dead worker processes.
         It purges any record of the dead worker from the queue's state.
-        Also, it will retrieve the tasks that those dead workers were 
+        Also, it will retrieve the tasks that those dead workers were
         unable to finish processing in ``unfinished_tasks`` and pass
         them along to the client for further instructions.
         """
@@ -70,17 +71,18 @@ class WorkerQueue(object):
 
 
 class ServerProcess(Process):
-    """The Proxy Server that the Futures client and worker clients connect to. 
+    """The Proxy Server that the Futures client and worker clients connect to.
     It uses asynchronous messaging queues to communicate with clients. Its main
     functionality is load balancing, which is implemented as a queue of LRU workers
     (refer to ``WorkerQueue``).
 
     Parameters
     ----------
-    client_address : 
+    client_address :
 
-    verbose : 
+    verbose :
     """
+
     def __init__(self, client_address, verbose):
         super(ServerProcess, self).__init__()
 
@@ -131,7 +133,7 @@ class ServerProcess(Process):
                     poller = poll_workers
 
                 # Start listening to client/workers (blocking)
-                socks = dict(poller.poll()) 
+                socks = dict(poller.poll())
 
                 # Get message from the backend worker.
                 if socks.get(backend) == zmq.POLLIN:
@@ -257,7 +259,7 @@ class ServerProcess(Process):
                 if socks.get(frontend) == zmq.POLLIN:
 
                     # The DEALER socket prepended the client address.
-                    # [client_address, task_key, task_mode_signal, start_method_signal, func_statefulness_signal, func, args] 
+                    # [client_address, task_key, task_mode_signal, start_method_signal, func_statefulness_signal, func, args]
                     # for normal task request.
                     # [client_address, dummy_task_key, kill_signal]
                     # if ``close`` is invoked from futures client.
@@ -343,9 +345,16 @@ class ServerProcess(Process):
                         )
 
                         failed_task_keys = workers.purge()
-                        failed_task_keys = msgpack.packb(failed_task_keys, use_bin_type=True)
+                        failed_task_keys = msgpack.packb(
+                            failed_task_keys, use_bin_type=True
+                        )
 
-                        msg = [self.client_address, DUMMY_TASK_KEY, WORKER_FAILURE_SIGNAL, failed_task_keys]
+                        msg = [
+                            self.client_address,
+                            DUMMY_TASK_KEY,
+                            WORKER_FAILURE_SIGNAL,
+                            failed_task_keys,
+                        ]
 
                         frontend.send_multipart(msg)
 

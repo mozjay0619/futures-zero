@@ -12,6 +12,7 @@ import cloudpickle
 import feather
 import msgpack
 import numpy as np
+import pandas as pd
 import psutil
 import zmq
 
@@ -22,661 +23,695 @@ from .worker import WorkerProcess
 
 
 class WORKER_FAILED(UserWarning):
-	pass
+    pass
 
 
 class Futures:
-	"""Parallelization using ZeroMQ message passing framework. The architecture
-	design is based on the Paranoid Pirate Pattern described in "".
-
-	This class is responsible for starting the daemon process for the proxy server
-	and the daemon processes for the workers. The client runs on the main process.
-	When the client submits tasks, they are queued in the server proxy server socket.
-	The server will load balance the tasks to the LRU (least recently used) worker.
-
-	There are 4 different ways to submit the user functions:
-
-	- submit
-	- submit_stateful
-	- apply
-	- capply
-
-	Refer to the method docstrings below and the accompanying jupyter notebook
-	tutorial for their use cases.
-
-	Parameters
-	----------
-	n_workers : int
-			The number of worker processes to use. Default is the number of available
-			physical cores.
-
-	start_method : str, Default
-			The process start method. Available options: "fork", "spawn", and "forkserver".
-			Default is "fork".
-
-	verbose : int
-			The levels of verboseness. Available options: 0, 1, 2. Default is 0.
-
-	worker : WorkerProcess
-			The subclass of WorkerProcess for custom initialization of the worker process.
-
-	worker_args : list
-			The positional arguments for the WorkerProcess.
-
-	worker_kwargs : dict
-			The keyword arguments for the WorkerProcess.
-	"""
-
-	def __init__(
-		self,
-		n_workers=None,
-		start_method="fork",
-		verbose=0,
-		worker=None,
-		worker_args=[],
-		worker_kwargs={},
-		request_retries=2
-	):
-
-		self.n_workers = n_workers
-		self.start_method = start_method
-		self.verbose = verbose
-		self.worker = worker
-		self.worker_args = worker_args
-		self.worker_kwargs = worker_kwargs
-		self.request_retries = request_retries
-
-		self.worker_procs = []
-
-		if n_workers is None:
-
-			self.n_workers = psutil.cpu_count(logical=False)
-
-		self.dataframe = None
-		self.results = dict()
-		self.errors = dict()
-		self._task_keys = set()
-		self._pending_tasks = dict()
-		self._failed_tasks = dict()
-		self._fail_counter = defaultdict(int)
-
-		self.server_client_online = False
-		self.mode = "normal"
-
-	def print(self, s, lvl):
-
-		if self.verbose >= lvl:
-			print(s)
-
-	def start_workers(self, n_workers):
-		"""Start the worker processes, either the default WorkerProcess
-		or overridden WorkerProcess.
-
-		Parameters
-		----------
-		n_workers : int
-				The number of worker processes to use.
-		"""
-		for _ in range(n_workers):
-
-			if self.worker is not None:
-
-				worker_proc = self.worker(
-					self.verbose,
-					self.dataframe,
-					*self.worker_args,
-					**self.worker_kwargs,
-				)
-
-			else:
+    """Parallelization using ZeroMQ message passing framework. The architecture
+    design is based on the Paranoid Pirate Pattern described in "".
+
+    This class is responsible for starting the daemon process for the proxy server
+    and the daemon processes for the workers. The client runs on the main process.
+    When the client submits tasks, they are queued in the server proxy server socket.
+    The server will load balance the tasks to the LRU (least recently used) worker.
+
+    There are 4 different ways to submit the user functions:
+
+    - submit
+    - submit_stateful
+    - apply
+    - capply
+
+    Refer to the method docstrings below and the accompanying jupyter notebook
+    tutorial for their use cases.
+
+    Parameters
+    ----------
+    n_workers : int
+                    The number of worker processes to use. Default is the number of available
+                    physical cores.
+
+    start_method : str, Default
+                    The process start method. Available options: "fork", "spawn", and "forkserver".
+                    Default is "fork".
+
+    verbose : int
+                    The levels of verboseness. Available options: 0, 1, 2. Default is 0.
+
+    worker : WorkerProcess
+                    The subclass of WorkerProcess for custom initialization of the worker process.
+
+    worker_args : list
+                    The positional arguments for the WorkerProcess.
+
+    worker_kwargs : dict
+                    The keyword arguments for the WorkerProcess.
+    """
+
+    def __init__(
+        self,
+        n_workers=None,
+        start_method="fork",
+        verbose=0,
+        worker=None,
+        worker_args=[],
+        worker_kwargs={},
+        request_retries=2,
+    ):
+
+        self.n_workers = n_workers
+        self.start_method = start_method
+        self.verbose = verbose
+        self.worker = worker
+        self.worker_args = worker_args
+        self.worker_kwargs = worker_kwargs
+        self.request_retries = request_retries
+
+        self.worker_procs = []
+
+        if n_workers is None:
+
+            self.n_workers = psutil.cpu_count(logical=False)
+
+        set_start_method(self.start_method, force=True)
+
+        self.dataframe = None
+        self.results = dict()
+        self.errors = dict()
+        self._task_keys = set()
+        self._pending_tasks = dict()
+        self._failed_tasks = dict()
+        self._fail_counter = defaultdict(int)
 
-				worker_proc = WorkerProcess(
-					__verbose__=self.verbose, __dataframe__=self.dataframe
-				)
+        self.server_client_online = False
+        self.mode = "normal"
+        self.sub_mode = defaultdict(bool)
 
-			worker_proc.daemon = True
-			worker_proc.start()
+    def print(self, s, lvl):
+
+        if self.verbose >= lvl:
+            print(s)
+
+    def start_workers(self, n_workers):
+        """Start the worker processes, either the default WorkerProcess
+        or overridden WorkerProcess.
+
+        Parameters
+        ----------
+        n_workers : int
+                        The number of worker processes to use.
+        """
+        for _ in range(n_workers):
+
+            if self.worker is not None:
+
+                worker_proc = self.worker(
+                    self.verbose,
+                    self.dataframe,
+                    *self.worker_args,
+                    **self.worker_kwargs,
+                )
+
+            else:
+
+                worker_proc = WorkerProcess(
+                    __verbose__=self.verbose, __dataframe__=self.dataframe
+                )
 
-			self.worker_procs.append(worker_proc)
+            worker_proc.daemon = True
+            worker_proc.start()
 
-	def start_server(self):
-		"""Start the server process."""
-		self.server_process = ServerProcess(self.client_address, self.verbose)
-		self.server_process.daemon = True
-		self.server_process.start()
+            self.worker_procs.append(worker_proc)
 
-	def start_client(self):
-		"""Connect the client socket to the server endpoint. Assign the
-		client the string address.
-		"""
-		self.client_address = str(os.getpid()).encode()
-		self.context = zmq.Context()
-		self.client = self.context.socket(zmq.DEALER)
-		self.client.setsockopt(zmq.IDENTITY, self.client_address)
-		self.client.connect(SERVER_ENDPOINT)
+    def start_server(self):
+        """Start the server process."""
+        self.server_process = ServerProcess(self.client_address, self.verbose)
+        self.server_process.daemon = True
+        self.server_process.start()
 
-		self.print("CLIENT STARTED: {}\n\n".format(self.client_address), 1)
+    def start_client(self):
+        """Connect the client socket to the server endpoint. Assign the
+        client the string address.
+        """
+        self.client_address = str(os.getpid()).encode()
+        self.context = zmq.Context()
+        self.client = self.context.socket(zmq.DEALER)
+        self.client.setsockopt(zmq.IDENTITY, self.client_address)
+        self.client.connect(SERVER_ENDPOINT)
 
-	def start(self):
-		"""Utility function to start the processes and bind the sockets.
-		Also, the ``server_client_online`` flag is set to True, so that the
-		Futures object knows not to restart the processes.
-		"""
-		self.start_workers(self.n_workers)
-		self.start_client()
-		self.start_server()
+        self.print("CLIENT STARTED: {}\n\n".format(self.client_address), 1)
 
-		self.server_client_online = True
+    def start(self):
+        """Utility function to start the processes and bind the sockets.
+        Also, the ``server_client_online`` flag is set to True, so that the
+        Futures object knows not to restart the processes.
+        """
+        self.start_workers(self.n_workers)
+        self.start_client()
+        self.start_server()
 
-	def close(self):
-		"""Gracefully terminate all the network sockets and processes with
-		timeout by sending them the kill signal. If there are remaining worker
-		processes after the set timeout, those processes are forcefully
-		terminated.
-		"""
-		
-		frames = [DUMMY_TASK_KEY, KILL_SIGNAL]
+        self.server_client_online = True
 
-		# The DEALER socket will prepend the client address.
-		# [dummy_task_key, kill_signal]
-		self.client.send_multipart(frames)
+    def close(self):
+        """Gracefully terminate all the network sockets and processes with
+        timeout by sending them the kill signal. If there are remaining worker
+        processes after the set timeout, those processes are forcefully
+        terminated.
+        """
 
-		self.server_client_online = False
+        frames = [DUMMY_TASK_KEY, KILL_SIGNAL]
 
-		close_start_time = time.time()
+        # The DEALER socket will prepend the client address.
+        # [dummy_task_key, kill_signal]
+        self.client.send_multipart(frames)
 
-		while (
-			any([proc.is_alive() for proc in self.worker_procs])
-			and time.time() - close_start_time < 1
-		):
+        self.server_client_online = False
 
-			time.sleep(0.01)
+        close_start_time = time.time()
 
-		for proc in self.worker_procs:
+        while (
+            any([proc.is_alive() for proc in self.worker_procs])
+            and time.time() - close_start_time < 1
+        ):
 
-			if proc.is_alive():
+            time.sleep(0.01)
 
-				self.print("FORCEFULLY TERMINATING WORKER", 1)
+        for proc in self.worker_procs:
 
-				proc.terminate()
+            if proc.is_alive():
 
-	def clean(self):
-		"""Clean out the computation results and data from memory."""
-		self.dataframe = None
-		self._task_keys = set()
-		self._pending_tasks = dict()
-		self.results = dict()
-		self.errors = dict()
-		self._failed_tasks = dict()
+                self.print("FORCEFULLY TERMINATING WORKER", 1)
 
-	def apply_to(self, dataframe, groupby=None, orderby=None, fork=True):
-		"""Prepare the dataframe for parallel processing. This procedure
-		depends on the process startmethod.
+                proc.terminate()
 
-		If the startmethod is forking, then we will rely on the Unix COW
-		to bring the dataframe to the subprocesses. Otherwise, we will write
-		the dataframe on disk using feather and read it from subprocesses.
+    def clean(self):
+        """Clean out the computation results and data from memory."""
+        self.dataframe = None
+        self._task_keys = set()
+        self._pending_tasks = dict()
+        self.results = dict()
+        self.errors = dict()
+        self._failed_tasks = dict()
+        self.sub_mode = defaultdict(bool)
 
-		If groupby is not None, then we will partition the dataframe by the
-		groupby column, and the dict will be saved in global namespace in
-		case of forking, or partitioned dataframes on disk using feather
-		otherwise (the feather writing of partitions is done in parallel using
-		forking).
+    def apply_to(self, dataframe, groupby=None, orderby=None, fork=True):
+        """Prepare the dataframe for parallel processing. This procedure
+        depends on the process startmethod.
 
-		Parameters
-		----------
-		dataframe : Pandas dataframe
+        If the startmethod is forking, then we will rely on the Unix COW
+        to bring the dataframe to the subprocesses. Otherwise, we will write
+        the dataframe on disk using feather and read it from subprocesses.
 
-		groupby : str
+        If groupby is not None, then we will partition the dataframe by the
+        groupby column, and the dict will be saved in global namespace in
+        case of forking, or partitioned dataframes on disk using feather
+        otherwise (the feather writing of partitions is done in parallel using
+        forking).
 
-		orderby : str
+        Parameters
+        ----------
+        dataframe : Pandas dataframe
 
-		fork : boolean
-		"""
+        groupby : str
 
-		self.mode = "pandas"
+        orderby : str
 
-		if groupby:
+        fork : boolean
+        """
 
-			self.sub_mode == "partition"
+        self.mode = "pandas"
 
-			dataframe_dict = dict()
+        if groupby:
 
-			for key, sub_df in dataframe.groupby(groupby):
+            self.sub_mode["partition"] = True
 
-				if orderby:
+            dataframe_dict = dict()
 
-					sub_df = sub_df.sort_values(orderby)
+            for key, sub_df in dataframe.groupby(groupby):
 
-				sub_df.reset_index(drop=True, inplace=True)
-				sub_df = sub_df.copy(deep=False)
+                if orderby:
 
-				dataframe_dict[key] = sub_df
+                    sub_df = sub_df.sort_values(orderby)
 
-			dataframe = dataframe_dict
+                sub_df.reset_index(drop=True, inplace=True)
+                sub_df = sub_df.copy(deep=False)
 
-		else:
+                dataframe_dict[key] = sub_df
 
-			self.sub_mode = "nonpartition"
+            dataframe = dataframe_dict
 
-			if orderby:
+        else:
 
-				dataframe = dataframe.sort_values(orderby)
-				dataframe.reset_index(drop=True, inplace=True)
-				dataframe = dataframe.copy(deep=False)
+            self.sub_mode["partition"] = False
 
-		if fork:
+            if orderby:
 
-			set_start_method("fork", force=True)
+                dataframe = dataframe.sort_values(orderby)
+                dataframe.reset_index(drop=True, inplace=True)
+                dataframe = dataframe.copy(deep=False)
 
-			if groupby:
+        if fork:
 
-				self.dataframe = dataframe_dict
+            set_start_method("fork", force=True)
 
-			else:
+            if groupby:
 
-				self.dataframe = dataframe
+                self.dataframe = dataframe_dict
 
-		# If the processes are not forked, then write the dataframe on disk.
-		# If groupby, then use forking to write the dataframe partitions in
-		# paraellel.
-		else:
+            else:
 
-			global global_dataframe
-			global_dataframe = dataframe
+                self.dataframe = dataframe
 
-			def write_dataframe(key=None):
+        # If the processes are not forked, then write the dataframe on disk.
+        # If groupby, then use forking to write the dataframe partitions in
+        # paraellel.
+        else:
 
-				global global_dataframe
+            global global_dataframe
+            global_dataframe = dataframe
 
-				if isinstance(global_dataframe, dict):
+            def write_dataframe(key=None):
 
-					filename = "".join([TMP_FILENAME, str(key)])
-					filepath = os.path.join(os.getcwd(), filename)
+                global global_dataframe
 
-					feather.write_dataframe(global_dataframe[key], filepath)
+                if isinstance(global_dataframe, dict):
 
-				else:
+                    filename = "".join([TMP_FILENAME, str(key)])
+                    filepath = os.path.join(os.getcwd(), filename)
 
-					print(global_dataframe)
+                    feather.write_dataframe(global_dataframe[key], filepath)
 
-			if groupby:
+                else:
 
-				for key in dataframe.keys():
+                    print(global_dataframe)
 
-					self.submit_keyed(key, write_dataframe, key)
+            if groupby:
 
-	def apply(self, func, __key__=None, *args, **kwargs):
-		"""Apply the user function on the Pandas dataframe passed in the ``apply_to``
-		method. The ``func`` method signature requires the dataframe as the first
-		positional argument.
+                for key in dataframe.keys():
 
-		Parameters
-		----------
-		func : Python method
+                    self.submit_keyed(key, write_dataframe, key)
 
-		__key__ : Python object
-		"""
-		self.mode = "pandas"
+    def apply(self, func, __key__=None, *args, **kwargs):
+        """Apply the user function on the Pandas dataframe passed in the ``apply_to``
+        method. The ``func`` method signature requires the dataframe as the first
+        positional argument.
 
-		key = __key__ or len(self._task_keys)
+        Parameters
+        ----------
+        func : Python method
 
-		binary = self._serialize(key, False, func, *args, **kwargs)
+        __key__ : Python object
+        """
+        self.mode = "pandas"
 
-		self._submit(key, binary)
+        key = __key__ or len(self._task_keys)
 
-	def capply(self, func, column=None, *args, **kwargs):
-		"""``capply`` stands for column-apply. Same as the ``apply`` method,
-		but the ``func`` method has an additional requirement that the return
-		value is the numpy array with the same length as the dataframe. That
-		array will be appended to the input dataframe with the name ``column``.
+        if isinstance(key, list):
+            key = tuple(key)
 
-		Parameters
-		----------
-		func : Python method
+        binary = self._serialize(key, False, func, *args, **kwargs)
 
-		column : str
-		"""
-		self.sub_mode == "column"
+        self._submit(key, binary)
 
-		key = column or len(self._task_keys)
+    def capply(self, func, column=None, *args, **kwargs):
+        """``capply`` stands for column-apply. Same as the ``apply`` method,
+        but the ``func`` method has an additional requirement that the return
+        value is the numpy array with the same length as the dataframe. That
+        array will be appended to the input dataframe with the name ``column``.
 
-		self.apply(func, key, func, *args, **kwargs)
+        You can also give the ``column`` a list of string names if the return value
+        of the ``func`` is a multidimensional array. Then the dataframe will get
+        multiple columns.
 
-	def submit(self, func, *args, __key__=None, __stateful__=False, **kwargs):
-		"""Pass in user func to compute in parallel.
+        Parameters
+        ----------
+        func : Python method
 
-		Parameters
-		----------
-		func : Python method
+        column : str or list or str
+        """
+        self.sub_mode["column"] = True
 
-		__key__ : Python object
+        key = column or len(self._task_keys)
 
-		__stateful__ : boolean
-				If True, the ``func`` method must have "self" as the first positional
-				argument, where that self is the WorkerProcess instance.
-		"""
-		self.mode = "normal"
+        self.apply(func, key, *args, **kwargs)
 
-		key = __key__ or len(self._task_keys)
+    def submit(self, func, *args, __key__=None, __stateful__=False, **kwargs):
+        """Pass in user func to compute in parallel.
 
-		binary = self._serialize(key, __stateful__, func, *args, **kwargs)
+        Parameters
+        ----------
+        func : Python method
 
-		self._submit(key, binary)
+        __key__ : Python object
 
-	def submit_keyed(self, key, func, *args, __stateful__=False, **kwargs):
-		"""Same as ``submit``, but key positional argument is required. 
+        __stateful__ : boolean
+                        If True, the ``func`` method must have "self" as the first positional
+                        argument, where that self is the WorkerProcess instance.
+        """
+        self.mode = "normal"
 
-		Parameters
-		----------
-		key : Python object
+        key = __key__ or len(self._task_keys)
 
-		func : Python method
-		"""
-		self.submit(func, *args, key, __stateful__, **kwargs)
+        if isinstance(key, list):
+            key = tuple(key)
 
-	def submit_stateful(self, func, *args, __key__=None, **kwargs):
-		"""Same as ``submit`` but the user method signature has a requirement
-		that "self" is the first positional argument. This "self" is the
-		WorkerProcess instance. This method is same as ``submit`` with
-		__stateful__ set to True.
+        binary = self._serialize(key, __stateful__, func, *args, **kwargs)
 
-		Parameters
-		----------
-		func : Python method
+        self._submit(key, binary)
 
-		__key__ : Python object
-		"""
-		self.submit(func, *args, __key__, True, **kwargs)
+    def submit_keyed(self, key, func, *args, __stateful__=False, **kwargs):
+        """Same as ``submit``, but key positional argument is required.
 
-	def _serialize(self, key, stateful, func, *args, **kwargs):
-		"""The ``func`` method is serialized using cloudpickle. The arguments
-		are serialized using msgpack. We will also attach 3 signals to the
-		message: task mode (e.g. normal, pandas), process start method
-		(e.g. fork), and statefulenss message.
+        Parameters
+        ----------
+        key : Python object
 
-		The return value is the message that will be passed over to the server,
-		which will route the message in turn to the LRU workers. This message
-		consists of a list of binary streams:
+        func : Python method
+        """
+        self.submit(func, *args, key, __stateful__, **kwargs)
 
-		0. key
-		1. task mode
-		2. process start method
-		3. statefulness of method
-		4. func
-		5. args (binary of args and kwargs)
-		"""
+    def submit_stateful(self, func, *args, __key__=None, **kwargs):
+        """Same as ``submit`` but the user method signature has a requirement
+        that "self" is the first positional argument. This "self" is the
+        WorkerProcess instance. This method is same as ``submit`` with
+        __stateful__ set to True.
 
-		# Serialize the task payload, comprised of the user method and method arguments.
-		binary_func = cloudpickle.dumps(func)
-		binary_args = msgpack.packb([args, kwargs], use_bin_type=True)
-		binary_key = msgpack.packb(key, use_bin_type=True)
+        Parameters
+        ----------
+        func : Python method
 
-		task_ctrl_msg = []
+        __key__ : Python object
+        """
+        self.submit(func, *args, __key__, True, **kwargs)
 
-		# Task mode message.
-		if self.mode == "normal":
+    def _serialize(self, key, stateful, func, *args, **kwargs):
+        """The ``func`` method is serialized using cloudpickle. The arguments
+        are serialized using msgpack. We will also attach 3 signals to the
+        message: task mode (e.g. normal, pandas), process start method
+        (e.g. fork), and statefulenss message.
 
-			task_ctrl_msg.append(NORMAL_TASK_REQUEST_SIGNAL)  # b"\x04"
+        The return value is the message that will be passed over to the server,
+        which will route the message in turn to the LRU workers. This message
+        consists of a list of binary streams:
 
-		elif self.mode == "pandas":
+        0. key
+        1. task mode
+        2. process start method
+        3. statefulness of method
+        4. func
+        5. args (binary of args and kwargs)
+        """
 
-			if self.sub_mode == "partition":
+        # Serialize the task payload, comprised of the user method and method arguments.
+        binary_func = cloudpickle.dumps(func)
+        binary_args = msgpack.packb([args, kwargs], use_bin_type=True)
+        binary_key = msgpack.packb(key, use_bin_type=True)
 
-				task_ctrl_msg.append(PANDAS_PARTITION_TASK_REQUEST_SIGNAL)  # b"\x05"
+        task_ctrl_msg = []
 
-			elif self.sub_mode == "nonpartition":
+        # Task mode message.
+        if self.mode == "normal":
 
-				task_ctrl_msg.append(PANDAS_NONPARTITION_TASK_REQUEST_SIGNAL)  # b"\x06"
+            task_ctrl_msg.append(NORMAL_TASK_REQUEST_SIGNAL)  # b"\x04"
 
-		# Process start method message.
-		if self.start_method == "fork":
+        elif self.mode == "pandas":
 
-			task_ctrl_msg.append(FORKED_PROCESS_SIGNAL)  # b"\x07"
+            if self.sub_mode["partition"]:
 
-		elif self.start_method in ["spawn", "forkserver"]:
+                task_ctrl_msg.append(PANDAS_PARTITION_TASK_REQUEST_SIGNAL)  # b"\x05"
 
-			task_ctrl_msg.append(SPAWNED_PROCESS_SIGNAL)  # b"\x08"
+            else:
 
-		else:
+                task_ctrl_msg.append(PANDAS_NONPARTITION_TASK_REQUEST_SIGNAL)  # b"\x06"
 
-			raise ValueError("Not a valid start method.")
+        # Process start method message.
+        if self.start_method == "fork":
 
-		# User method statefulness message.
-		if stateful:
+            task_ctrl_msg.append(FORKED_PROCESS_SIGNAL)  # b"\x07"
 
-			task_ctrl_msg.append(STATEFUL_METHOD_SIGNAL)  # b"\x10"
+        elif self.start_method in ["spawn", "forkserver"]:
 
-		else:
+            task_ctrl_msg.append(SPAWNED_PROCESS_SIGNAL)  # b"\x08"
 
-			task_ctrl_msg.append(STATELESS_METHOD_SIGNAL)  # b"\x11"
+        else:
 
-		return [binary_key] + task_ctrl_msg + [binary_func, binary_args]
+            raise ValueError("Not a valid start method.")
 
-	def _submit(self, key, request):
-		"""Utility function to send work request to the server (which will in turn delegate
-		the message to the first available LRU worker). Once the work is submitted, that
-		request message will be added to pending tasks list and the key will be added to the
-		task keys list. Importantly, if the server client are not online, we will call the
-		utility start method to start the daemon processes.
+        # User method statefulness message.
+        if stateful:
 
-		Parameters
-		----------
-		key : binary
+            task_ctrl_msg.append(STATEFUL_METHOD_SIGNAL)  # b"\x10"
 
-		request : list of binaries
-				0. key
-				1. task mode
-				2. process start method
-				3. statefulness of method
-				4. func
-				5. args (binary of args and kwargs)
-		"""
-		if not self.server_client_online:
-			self.start()
-			time.sleep(0.05)
+        else:
 
-		self.print(f"1. SENDING FROM CLIENT TO SERVER: {request}\n", 2)
-		self.print("** NOTE: b'\\x92\\x90\\x80' is [[], {}]\n\n", 2)
-		self.print(
-			"1. SENDING FROM CLIENT TO SERVER: [task_key, task_mode_signal, start_method_signal, "
-			"func_statefulness_signal, func, args]",
-			1,
-		)
+            task_ctrl_msg.append(STATELESS_METHOD_SIGNAL)  # b"\x11"
 
-		# The DEALER socket will prepend the client address.
-		# [task_key, task_mode_signal, start_method_signal, func_statefulness_signal, func, args]
-		self.client.send_multipart(request)
+        return [binary_key] + task_ctrl_msg + [binary_func, binary_args]
 
-		self._pending_tasks[key] = request
-		self._task_keys.add(key)
+    def _submit(self, key, request):
+        """Utility function to send work request to the server (which will in turn delegate
+        the message to the first available LRU worker). Once the work is submitted, that
+        request message will be added to pending tasks list and the key will be added to the
+        task keys list. Importantly, if the server client are not online, we will call the
+        utility start method to start the daemon processes.
 
-	def _handle_failed_tasks(self, task_key, error_msg):
-		"""Failed task retry mechanism. If the task has failed less than the set threshold counts,
-		re-submit the task. Otherwise, remove the task from pending tasks list and put it in the 
-		failed tasks list and record the error.
-		"""
-		self._fail_counter[task_key] += 1
+        Parameters
+        ----------
+        key : binary
 
-		if self._fail_counter[task_key] < self.request_retries:
+        request : list of binaries
+                        0. key
+                        1. task mode
+                        2. process start method
+                        3. statefulness of method
+                        4. func
+                        5. args (binary of args and kwargs)
+        """
+        if not self.server_client_online:
+            self.start()
+            time.sleep(0.05)
 
-			self.print(
-				f"9. TASK {task_key} FAILED {self._fail_counter[task_key]} TIME(S), RETRYING\n\n",
-				1,
-			)
+        self.print(f"1. SENDING FROM CLIENT TO SERVER: {request}\n", 2)
+        self.print("** NOTE: b'\\x92\\x90\\x80' is [[], {}]\n\n", 2)
+        self.print(
+            "1. SENDING FROM CLIENT TO SERVER: [task_key, task_mode_signal, start_method_signal, "
+            "func_statefulness_signal, func, args]",
+            1,
+        )
 
-			self._submit(task_key, self._pending_tasks.pop(task_key, None))
+        # The DEALER socket will prepend the client address.
+        # [task_key, task_mode_signal, start_method_signal, func_statefulness_signal, func, args]
+        self.client.send_multipart(request)
 
-		else:
+        self._pending_tasks[key] = request
+        self._task_keys.add(key)
 
-			self.print(
-				f"9. TASK {task_key} FAILED {self._fail_counter[task_key]} TIME(S), ABORTING\n\n",
-				1,
-			)
+    def _handle_failed_tasks(self, task_key, error_msg):
+        """Failed task retry mechanism. If the task has failed less than the set threshold counts,
+        re-submit the task. Otherwise, remove the task from pending tasks list and put it in the
+        failed tasks list and record the error.
+        """
+        self._fail_counter[task_key] += 1
 
-			# Place the task in the failed tasks dictionary.
-			self._failed_tasks[task_key] = self._pending_tasks.pop(task_key, None)
+        if self._fail_counter[task_key] < self.request_retries:
 
-			self.errors[task_key] = error_msg
+            self.print(
+                f"9. TASK {task_key} FAILED {self._fail_counter[task_key]} TIME(S), RETRYING\n\n",
+                1,
+            )
 
-	def _poll(self):
-		"""Start the infinite while loop to listen to the server for replies. Continue the
-		loop while the sum of results, errors and dead workers is less than the total number
-		of submitted tasks.
+            self._submit(task_key, self._pending_tasks.pop(task_key, None))
 
-		There are two types of successful signals:
-			- normal: the payload is deserialized using msgpack.
-			- numpy: the numpy array is reconstructed using memoryview from the memory buffer
+        else:
 
-		There are two types of failure signals:
-			- task failure: error caused by the user ``func``.
-			- worker failure: error caused by death of the process itself.
+            self.print(
+                f"9. TASK {task_key} FAILED {self._fail_counter[task_key]} TIME(S), ABORTING\n\n",
+                1,
+            )
 
-		The server cannot see the worker death and therefore the client from main process
-		will check if there are workers that are dead. If there are, it will start as many 
-		processes as they died. The tasks that were never completed by those processes will 
-		be re-submited.
-		"""
-		while len(self.results) + len(self.errors) < len(self._task_keys):
+            # Place the task in the failed tasks dictionary.
+            self._failed_tasks[task_key] = self._pending_tasks.pop(task_key, None)
 
-			# Start listening to replies from the server
-			if (self.client.poll(REQUEST_TIMEOUT) & zmq.POLLIN) != 0:
+            self.errors[task_key] = error_msg
 
-				# The REQ socket stripped off the client address.
-				# [task_key, task_signal, error_msg, task_signal, task_signal, func, args] or
-				# [task_key, task_signal, result] or
-				# [dummy_task_key, worker_failure_signal, failed_task_keys]
-				reply = self.client.recv_multipart()
+    def _poll(self):
+        """Start the infinite while loop to listen to the server for replies. Continue the
+        loop while the sum of results, errors and dead workers is less than the total number
+        of submitted tasks.
 
-				task_key = msgpack.unpackb(reply[0], raw=False)  # task_key
+        There are two types of successful signals:
+                - normal: the payload is deserialized using msgpack.
+                - numpy: the numpy array is reconstructed using memoryview from the memory buffer
 
-				reply_payload = reply[1:]
-				# [task_success_signal, result]
-				# [numpy_task_success_signal, metadata, result]
-				# [task_signal, error_msg]
-				# [worker_failure_signal, failed_task_keys]
+        There are two types of failure signals:
+                - task failure: error caused by the user ``func``.
+                - worker failure: error caused by death of the process itself.
 
-				# If the task is returning general python object(s), use msgpack to deserialize data.
-				if reply_payload[0] == TASK_SUCCESS_SIGNAL:
+        The server cannot see the worker death and therefore the client from main process
+        will check if there are workers that are dead. If there are, it will start as many
+        processes as they died. The tasks that were never completed by those processes will
+        be re-submited.
+        """
+        while len(self.results) + len(self.errors) < len(self._task_keys):
 
-					self.print(f"8. RECEIVED FROM SERVER IN CLIENT: {reply}\n", 2)
-					self.print(
-						"8. RECEIVED FROM SERVER IN CLIENT: [task_key, task_success_signal, result]\n\n",
-						1,
-					)
+            # Start listening to replies from the server
+            if (self.client.poll(REQUEST_TIMEOUT) & zmq.POLLIN) != 0:
 
-					# Recover the returned data.
-					result = msgpack.unpackb(reply_payload[1], raw=False)
+                # The REQ socket stripped off the client address.
+                # [task_key, task_signal, error_msg, task_signal, task_signal, func, args] or
+                # [task_key, task_signal, result] or
+                # [dummy_task_key, worker_failure_signal, failed_task_keys]
+                reply = self.client.recv_multipart()
 
-					self.bar.report(len(self.results))
+                task_key = msgpack.unpackb(reply[0], raw=False)  # task_key
 
-					# Remove the task from pending status only after checking the results.
-					self._pending_tasks.pop(task_key, None)
+                if isinstance(task_key, list):
+                    task_key = tuple(task_key)
 
-					self.results[task_key] = result
+                reply_payload = reply[1:]
+                # [task_success_signal, result]
+                # [numpy_task_success_signal, metadata, result]
+                # [task_signal, error_msg]
+                # [worker_failure_signal, failed_task_keys]
 
-				# If the task returns a single numpy array, use memoryview and memory buffer to recover the data.
-				elif reply_payload[0] == NUMPY_TASK_SUCCESS_SIGNAL:
+                # If the task is returning general python object(s), use msgpack to deserialize data.
+                if reply_payload[0] == TASK_SUCCESS_SIGNAL:
 
-					self.print(f"8. RECEIVED IN CLIENT FROM SERVER: {reply}\n", 2)
-					self.print(
-						"8. RECEIVED IN CLIENT FROM SERVER: [task_key, numpy_task_success_signal, metadata, result]\n\n",
-						1,
-					)
+                    self.print(f"8. RECEIVED FROM SERVER IN CLIENT: {reply}\n", 2)
+                    self.print(
+                        "8. RECEIVED FROM SERVER IN CLIENT: [task_key, task_success_signal, result]\n\n",
+                        1,
+                    )
 
-					# Recover the numpy array from the binary stream.
-					metadata = msgpack.unpackb(reply_payload[1], raw=False)
-					buf = memoryview(reply_payload[2])
-					result = np.frombuffer(buf, dtype=metadata["dtype"])
+                    # Recover the returned data.
+                    result = msgpack.unpackb(reply_payload[1], raw=False)
 
-					# If ``capply`` was called, append the array as a column to the input dataframe.
-					if self.mode == "pandas" and self.sub_mode == "column":
+                    self.bar.report(len(self.results))
 
-						if self.sub_mode == "nonpartition":
+                    # Remove the task from pending status only after checking the results.
+                    self._pending_tasks.pop(task_key, None)
 
-							if (
-								(isinstance(result, np.ndarray))
-								& (len(result) == len(self.dataframe))
-								& (not isinstance(task_key, int))
-							):
+                    self.results[task_key] = result
 
-								self.dataframe[task_key] = result
+                # If the task returns a single numpy array, use memoryview and memory buffer to recover the data.
+                elif reply_payload[0] == NUMPY_TASK_SUCCESS_SIGNAL:
 
-					self.bar.report(len(self.results))
+                    self.print(f"8. RECEIVED IN CLIENT FROM SERVER: {reply}\n", 2)
+                    self.print(
+                        "8. RECEIVED IN CLIENT FROM SERVER: [task_key, numpy_task_success_signal, metadata, result]\n\n",
+                        1,
+                    )
 
-					# Remove the task from pending status only after checking the results.
-					self._pending_tasks.pop(task_key, None)
+                    # Recover the numpy array from the binary stream.
+                    metadata = msgpack.unpackb(reply_payload[1], raw=False)
+                    buf = memoryview(reply_payload[2])
+                    result = np.frombuffer(buf, dtype=metadata["dtype"]).reshape(
+                        metadata["shape"]
+                    )
 
-					self.results[task_key] = result
+                    # If ``capply`` was called, append the array as a column to the input dataframe.
+                    if self.mode == "pandas" and self.sub_mode["column"]:
 
-				elif reply_payload[0] == TASK_FAILURE_SIGNAL:
+                        if not self.sub_mode["partition"]:
 
-					self.print(f"8. RECEIVED IN CLIENT FROM SERVER: {reply}\n", 2)
-					self.print(
-						"8. RECEIVED IN CLIENT FROM SERVER: [task_key, task_failure_signal, error]\n\n",
-						1,
-					)
+                            if (
+                                (isinstance(result, np.ndarray))
+                                & (len(result) == len(self.dataframe))
+                                & (not isinstance(task_key, int))
+                            ):
 
-					error_msg = msgpack.unpackb(reply_payload[1], raw=False)
+                                if isinstance(task_key, tuple) & (
+                                    result.shape[1] == len(task_key)
+                                ):
+                                    res_df = pd.DataFrame(result, columns=task_key)
+                                    self.dataframe = self.dataframe.join(res_df)
+                                else:
+                                    self.dataframe[task_key] = result
 
-					self._handle_failed_tasks(task_key, error_msg)
+                        self.results[task_key] = None
 
-				elif reply_payload[0] == WORKER_FAILURE_SIGNAL:
+                    elif self.mode == "normal":
 
+                        self.results[task_key] = result
 
-					self.print(f"8. RECEIVED IN CLIENT FROM SERVER: {reply}\n", 2)
-					self.print(
-						"8. RECEIVED IN CLIENT FROM SERVER: [dummy_task_key, worker_failure_signal, error]\n\n",
-						1,
-					)
+                    self.bar.report(len(self.results))
 
-					failed_task_keys = msgpack.unpackb(reply_payload[1], raw=False)
+                    # Remove the task from pending status only after checking the results.
+                    self._pending_tasks.pop(task_key, None)
 
-					for failed_task_key in failed_task_keys:
+                elif reply_payload[0] == TASK_FAILURE_SIGNAL:
 
-						warning_msg = "task id {} failed due to: worker death".format(failed_task_key)
-                		warnings.warn(warning_msg, WORKER_FAILED)
+                    self.print(f"8. RECEIVED IN CLIENT FROM SERVER: {reply}\n", 2)
+                    self.print(
+                        "8. RECEIVED IN CLIENT FROM SERVER: [task_key, task_failure_signal, error]\n\n",
+                        1,
+                    )
 
-						self._handle_failed_tasks(failed_task_key, "Premature worker death")
+                    error_msg = msgpack.unpackb(reply_payload[1], raw=False)
 
-			# Check the status of the child processes every REQUEST_TIMEOUT milliseconds.
-			worker_deaths = [not proc.is_alive() for proc in self.worker_procs]
+                    self._handle_failed_tasks(task_key, error_msg)
 
-			# If any workers are dead, inform the server and start that many workers again.
-			if any(worker_deaths):
+                elif reply_payload[0] == WORKER_FAILURE_SIGNAL:
 
-				# Update the worker process list.
-				self.worker_procs = [proc for proc in self.worker_procs if proc.is_alive()]
+                    self.print(f"8. RECEIVED IN CLIENT FROM SERVER: {reply}\n", 2)
+                    self.print(
+                        "8. RECEIVED IN CLIENT FROM SERVER: [dummy_task_key, worker_failure_signal, error]\n\n",
+                        1,
+                    )
 
-				frames = [DUMMY_TASK_KEY, WORKER_FAILURE_SIGNAL]
+                    failed_task_keys = msgpack.unpackb(reply_payload[1], raw=False)
 
-				# The DEALER socket will prepend the client address.
-				# [dummy_task_key, worker_failure_signal]
-				self.client.send_multipart(frames)
+                    for failed_task_key in failed_task_keys:
 
-				self.start_workers(sum(worker_deaths))
+                        warning_msg = "task id {} failed due to: worker death".format(
+                            failed_task_key
+                        )
+                        warnings.warn(warning_msg, WORKER_FAILED)
 
-	def get(self, keyed=False):
-		
-		self.bar = ProgressBar()
-		self.bar.set_total(len(self._task_keys))
-		self.bar.report(0)
+                        self._handle_failed_tasks(
+                            failed_task_key, "Premature worker death"
+                        )
 
-		self._poll()
+            # Check the status of the child processes every REQUEST_TIMEOUT milliseconds.
+            worker_deaths = [not proc.is_alive() for proc in self.worker_procs]
 
-		if len(self.results) == len(self._task_keys):
+            # If any workers are dead, inform the server and start that many workers again.
+            if any(worker_deaths):
 
-			self.bar.completion_report()
+                # Update the worker process list.
+                self.worker_procs = [
+                    proc for proc in self.worker_procs if proc.is_alive()
+                ]
 
-		self.close()
+                frames = [DUMMY_TASK_KEY, WORKER_FAILURE_SIGNAL]
 
-		if self.mode == "normal":
+                # The DEALER socket will prepend the client address.
+                # [dummy_task_key, worker_failure_signal]
+                self.client.send_multipart(frames)
 
-			if not keyed:
-				return list(self.results.values())
-			else:
-				return self.results
+                self.start_workers(sum(worker_deaths))
 
-		elif self.mode == "pandas":
+    def get(self, keyed=False):
 
-			return self.dataframe
+        self.bar = ProgressBar()
+        self.bar.set_total(len(self._task_keys))
+        self.bar.report(0)
+
+        self._poll()
+
+        if len(self.results) == len(self._task_keys):
+
+            self.bar.completion_report()
+
+        self.close()
+
+        if self.mode == "normal":
+
+            if not keyed:
+                return list(self.results.values())
+            else:
+                return self.results
+
+        elif self.mode == "pandas":
+
+            return self.dataframe

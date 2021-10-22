@@ -71,7 +71,7 @@ class WorkerProcess(Process):
                     # The ROUTER socket strips the worker_address.
                     # [client_address, task_key, task_mode_signal, start_method_signal, func_statefulness_signal, func, args] or
                     # for normal task request.
-                    # [kill_signal] 
+                    # [kill_signal]
                     # if ``close`` is invoked from futures client.
                     frames = worker.recv_multipart()
 
@@ -172,6 +172,9 @@ class WorkerProcess(Process):
                             # If the result is a numpy n-dim array, use memory buffer for communication.
                             if isinstance(result, np.ndarray):
 
+                                if not result.flags["C_CONTIGUOUS"]:
+                                    result = np.ascontiguousarray(result)
+
                                 metadata = dict(
                                     dtype=str(result.dtype),
                                     shape=result.shape,
@@ -224,7 +227,9 @@ class WorkerProcess(Process):
                             task_key_bin = reply_frame_header[-1]
                             task_key = msgpack.unpackb(task_key_bin, raw=False)
 
-                            warning_msg = "task id {} failed due to: {}".format(task_key, repr(e))
+                            warning_msg = "task id {} failed due to: {}".format(
+                                task_key, repr(e)
+                            )
                             warnings.warn(warning_msg, TASK_FAILED)
 
                             error_binary = msgpack.packb(repr(e), use_bin_type=True)
