@@ -15,7 +15,6 @@ class WorkerQueue(object):
     worker is busy processing which task key. The set of all worker
     address is used by, for instance, kill command.
     """
-
     def __init__(self):
         self.free_workers = list()
         self.busy_workers = dict()
@@ -45,7 +44,7 @@ class WorkerQueue(object):
     def purge(self):
         """Only called when the client detects dead worker processes.
         It purges any record of the dead worker from the queue's state.
-        Also, it will retrieve the tasks that those dead workers were
+        Also, it will retrieve the keys of tasks that those dead workers were
         unable to finish processing in ``unfinished_tasks`` and pass
         them along to the client for further instructions.
         """
@@ -78,9 +77,9 @@ class ServerProcess(Process):
 
     Parameters
     ----------
-    client_address :
+    client_address : str
 
-    verbose :
+    verbose : int
     """
 
     def __init__(self, client_address, verbose):
