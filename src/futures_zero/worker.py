@@ -8,7 +8,6 @@ from random import randint
 import cloudpickle
 import msgpack
 import numpy as np
-import yaml
 import zmq
 from zmq.error import ZMQError
 
