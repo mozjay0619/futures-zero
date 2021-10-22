@@ -320,7 +320,7 @@ class Futures:
 		self.mode = "pandas"
 
 		key = __key__ or len(self._task_keys)
-		
+
 		binary = self._serialize(key, False, func, *args, **kwargs)
 
 		self._submit(key, binary)
@@ -537,17 +537,16 @@ class Futures:
 		processes as they died. The tasks that were never completed by those processes will 
 		be re-submited.
 		"""
-
 		while len(self.results) + len(self.errors) < len(self._task_keys):
 
 			# Start listening to replies from the server
 			if (self.client.poll(REQUEST_TIMEOUT) & zmq.POLLIN) != 0:
 
-				reply = self.client.recv_multipart()
 				# The REQ socket stripped off the client address.
 				# [task_key, task_signal, error_msg, task_signal, task_signal, func, args] or
 				# [task_key, task_signal, result] or
 				# [dummy_task_key, worker_failure_signal, failed_task_keys]
+				reply = self.client.recv_multipart()
 
 				task_key = msgpack.unpackb(reply[0], raw=False)  # task_key
 
@@ -634,6 +633,9 @@ class Futures:
 					failed_task_keys = msgpack.unpackb(reply_payload[1], raw=False)
 
 					for failed_task_key in failed_task_keys:
+
+						warning_msg = "task id {} failed due to: worker death".format(failed_task_key)
+                		warnings.warn(warning_msg, WORKER_FAILED)
 
 						self._handle_failed_tasks(failed_task_key, "Premature worker death")
 

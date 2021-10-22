@@ -257,9 +257,12 @@ class ServerProcess(Process):
                 if socks.get(frontend) == zmq.POLLIN:
 
                     # The DEALER socket prepended the client address.
-                    # [client_address, task_key, task_mode_signal, start_method_signal, func_statefulness_signal, func, args] or
-                    # [client_address, task_key, kill_signal]
+                    # [client_address, task_key, task_mode_signal, start_method_signal, func_statefulness_signal, func, args] 
+                    # for normal task request.
+                    # [client_address, dummy_task_key, kill_signal]
+                    # if ``close`` is invoked from futures client.
                     # [client_address, dummy_task_key, worker_failure_signal]
+                    # if any worker process termination is detected from futures client.
                     frames = frontend.recv_multipart()
 
                     # Interrupted
