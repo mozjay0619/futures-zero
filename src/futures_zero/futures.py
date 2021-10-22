@@ -75,6 +75,7 @@ class Futures:
 		worker=None,
 		worker_args=[],
 		worker_kwargs={},
+		request_retries=2
 	):
 
 		self.n_workers = n_workers
@@ -83,6 +84,7 @@ class Futures:
 		self.worker = worker
 		self.worker_args = worker_args
 		self.worker_kwargs = worker_kwargs
+		self.request_retries = request_retries
 
 		self.worker_procs = []
 
@@ -318,6 +320,7 @@ class Futures:
 		self.mode = "pandas"
 
 		key = __key__ or len(self._task_keys)
+		
 		binary = self._serialize(key, False, func, *args, **kwargs)
 
 		self._submit(key, binary)
@@ -356,9 +359,21 @@ class Futures:
 		self.mode = "normal"
 
 		key = __key__ or len(self._task_keys)
+
 		binary = self._serialize(key, __stateful__, func, *args, **kwargs)
 
 		self._submit(key, binary)
+
+	def submit_keyed(self, key, func, *args, __stateful__=False, **kwargs):
+		"""Same as ``submit``, but key positional argument is required. 
+
+		Parameters
+		----------
+		key : Python object
+
+		func : Python method
+		"""
+		self.submit(func, *args, key, __stateful__, **kwargs)
 
 	def submit_stateful(self, func, *args, __key__=None, **kwargs):
 		"""Same as ``submit`` but the user method signature has a requirement
@@ -471,11 +486,7 @@ class Futures:
 
 		# The DEALER socket will prepend the client address.
 		# [task_key, task_mode_signal, start_method_signal, func_statefulness_signal, func, args]
-		try:
-			self.client.send_multipart(request)
-
-		except:
-			print(request, 'AAAA')
+		self.client.send_multipart(request)
 
 		self._pending_tasks[key] = request
 		self._task_keys.add(key)
@@ -487,7 +498,7 @@ class Futures:
 		"""
 		self._fail_counter[task_key] += 1
 
-		if self._fail_counter[task_key] < REQUEST_RETRIES:
+		if self._fail_counter[task_key] < self.request_retries:
 
 			self.print(
 				f"9. TASK {task_key} FAILED {self._fail_counter[task_key]} TIME(S), RETRYING\n\n",
@@ -545,7 +556,6 @@ class Futures:
 				# [numpy_task_success_signal, metadata, result]
 				# [task_signal, error_msg]
 				# [worker_failure_signal, failed_task_keys]
-
 
 				# If the task is returning general python object(s), use msgpack to deserialize data.
 				if reply_payload[0] == TASK_SUCCESS_SIGNAL:
@@ -644,7 +654,7 @@ class Futures:
 
 				self.start_workers(sum(worker_deaths))
 
-	def get(self):
+	def get(self, keyed=False):
 		
 		self.bar = ProgressBar()
 		self.bar.set_total(len(self._task_keys))
@@ -660,7 +670,10 @@ class Futures:
 
 		if self.mode == "normal":
 
-			return list(self.results.values())
+			if not keyed:
+				return list(self.results.values())
+			else:
+				return self.results
 
 		elif self.mode == "pandas":
 

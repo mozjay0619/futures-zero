@@ -70,7 +70,7 @@ class WorkerProcess(Process):
 
                     # The ROUTER socket strips the worker_address.
                     # [client_address, task_key, task_mode_signal, start_method_signal, func_statefulness_signal, func, args] or
-                    # [kill_signal] or
+                    # [kill_signal] 
                     frames = worker.recv_multipart()
 
                     # Interrupted
