@@ -1,0 +1,11 @@
+twine
+coverage
+pytest
+codecov
+pandas
+numpy
+cloudpickle
+feather-format
+msgpack
+psutil
+zmq
