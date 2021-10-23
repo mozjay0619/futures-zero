@@ -28,16 +28,24 @@ class WORKER_FAILED(UserWarning):
 
 class Futures:
     """Parallelization using ZeroMQ message passing framework. The architecture
-    design is based on the Paranoid Pirate Pattern described in "".
+    design is based on the Paranoid Pirate Pattern described in
+    "https://zguide.zeromq.org/docs/chapter4/".
 
     This class is responsible for starting the daemon process for the proxy server
     and the daemon processes for the workers. The client runs on the main process.
     When the client submits tasks, they are queued in the server proxy server socket.
     The server will load balance the tasks to the LRU (least recently used) worker.
+    Once the worker finishes the task, it will send the results message to the server,
+    which will in turn send the message back to the client in the main process.
 
-    There are 4 different ways to submit the user functions:
+                                                                      worker (client)
+    client <--asynch msg queue--> proxy server <--asynch msg queue--> worker (client)
+                                                                      worker (client)
+    
+    There are 5 different ways to submit the user functions:
 
     - submit
+    - submit_keyed
     - submit_stateful
     - apply
     - capply
@@ -48,24 +56,27 @@ class Futures:
     Parameters
     ----------
     n_workers : int
-                    The number of worker processes to use. Default is the number of available
-                    physical cores.
+        The number of worker processes to use. Default is the number of available
+        physical cores.
 
     start_method : str, Default
-                    The process start method. Available options: "fork", "spawn", and "forkserver".
-                    Default is "fork".
+        The process start method. Available options: "fork", "spawn", and "forkserver".
+        Default is "fork".
 
     verbose : int
-                    The levels of verboseness. Available options: 0, 1, 2. Default is 0.
+        The levels of verboseness. Available options: 0, 1, 2. Default is 0.
 
     worker : WorkerProcess
-                    The subclass of WorkerProcess for custom initialization of the worker process.
+        The subclass of WorkerProcess for custom initialization of the worker process.
 
     worker_args : list
-                    The positional arguments for the WorkerProcess.
+        The positional arguments for the WorkerProcess.
 
     worker_kwargs : dict
-                    The keyword arguments for the WorkerProcess.
+        The keyword arguments for the WorkerProcess.
+
+    request_retries : int
+        The number of retries for any given task.
     """
 
     def __init__(
@@ -113,13 +124,13 @@ class Futures:
             print(s)
 
     def start_workers(self, n_workers):
-        """Start the worker processes, either the default WorkerProcess
-        or overridden WorkerProcess.
+        """Start the worker processes, either the default WorkerProcess class
+        or overridden WorkerProcess subclass.
 
         Parameters
         ----------
         n_workers : int
-                        The number of worker processes to use.
+            The number of worker processes to use.
         """
         for _ in range(n_workers):
 
@@ -151,7 +162,7 @@ class Futures:
 
     def start_client(self):
         """Connect the client socket to the server endpoint. Assign the
-        client the string address.
+        client the string address (the current process's PID).
         """
         self.client_address = str(os.getpid()).encode()
         self.context = zmq.Context()
@@ -178,7 +189,6 @@ class Futures:
         processes after the set timeout, those processes are forcefully
         terminated.
         """
-
         frames = [DUMMY_TASK_KEY, KILL_SIGNAL]
 
         # The DEALER socket will prepend the client address.
@@ -216,7 +226,7 @@ class Futures:
 
     def apply_to(self, dataframe, groupby=None, orderby=None, fork=True):
         """Prepare the dataframe for parallel processing. This procedure
-        depends on the process startmethod.
+        depends on the process start method.
 
         If the startmethod is forking, then we will rely on the Unix COW
         to bring the dataframe to the subprocesses. Otherwise, we will write
@@ -341,7 +351,7 @@ class Futures:
 
         You can also give the ``column`` a list of string names if the return value
         of the ``func`` is a multidimensional array. Then the dataframe will get
-        multiple columns.
+        multiple columns, using column names from the ``column`` list.
 
         Parameters
         ----------
@@ -365,8 +375,8 @@ class Futures:
         __key__ : Python object
 
         __stateful__ : boolean
-                        If True, the ``func`` method must have "self" as the first positional
-                        argument, where that self is the WorkerProcess instance.
+            If True, the ``func`` method must have "self" as the first positional
+            argument, where that self is the WorkerProcess instance.
         """
         self.mode = "normal"
 
@@ -540,12 +550,12 @@ class Futures:
         of submitted tasks.
 
         There are two types of successful signals:
-                - normal: the payload is deserialized using msgpack.
-                - numpy: the numpy array is reconstructed using memoryview from the memory buffer
+            - normal: the payload is deserialized using msgpack.
+            - numpy: the numpy array is reconstructed using memoryview from the memory buffer
 
         There are two types of failure signals:
-                - task failure: error caused by the user ``func``.
-                - worker failure: error caused by death of the process itself.
+            - task failure: error caused by the user ``func``.
+            - worker failure: error caused by death of the process itself.
 
         The server cannot see the worker death and therefore the client from main process
         will check if there are workers that are dead. If there are, it will start as many
@@ -628,7 +638,15 @@ class Futures:
                                 else:
                                     self.dataframe[task_key] = result
 
-                        self.results[task_key] = None
+                                self.results[task_key] = None
+
+                            else:
+
+                                warning_msg = "The resulting column could not be attached to " \
+                                    "the dataframe. Recording the results in 'results' dict"
+                                warnings.warn(warning_msg)
+
+                                self.results[task_key] = result
 
                     elif self.mode == "normal":
 

@@ -34,6 +34,12 @@ class WorkerProcess(Process):
     """The process for the worker client that connects to the server and carries
     out the requested computations in parallel. The user function can access its
     state if needed.
+
+    Parameters
+    ----------
+    __verbose__ : int
+
+    __dataframe__ :
     """
 
     def __init__(self, __verbose__, __dataframe__=None):
@@ -168,7 +174,7 @@ class WorkerProcess(Process):
                                 raise ValueError("Invalid task_model_signal.")
 
                             # Communicate the results back to the server.
-                            # If the result is a numpy n-dim array, use memory buffer for communication.
+                            # If the result is a numpy n-dim array, use memory buffer for messaging.
                             if isinstance(result, np.ndarray):
 
                                 if not result.flags["C_CONTIGUOUS"]:
