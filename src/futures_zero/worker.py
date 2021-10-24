@@ -10,6 +10,7 @@ import msgpack
 import numpy as np
 import zmq
 from zmq.error import ZMQError
+import feather
 
 from .config import *
 
@@ -37,16 +38,39 @@ class WorkerProcess(Process):
 
     Parameters
     ----------
-    __verbose__ : int
+    verbose : int
+        Available input values: 
+        - 0: no output
+        - 1: show message titles
+        - 2: show message contents
 
-    __dataframe__ :
+    dataframe : Pandas dataframe or None
+        Used if ``apply`` method is invoked.
     """
-
-    def __init__(self, __verbose__, __dataframe__=None):
+    def __init__(self, verbose, dataframe=None, forked=True, mode="normal", partition=False, *args, **kwargs):
         super(WorkerProcess, self).__init__()
 
-        self.verbose = __verbose__
-        self.dataframe = __dataframe__
+        self.verbose = verbose
+
+        if mode=="pandas":
+
+            if forked:
+
+                self.dataframe = dataframe
+
+            else:
+
+                if partition:
+
+                    pass
+
+                else:
+
+                    self.dataframe = feather.read_dataframe(dataframe)
+
+        else:
+
+            self.dataframe = None
 
     def print(self, s, lvl):
 
@@ -136,6 +160,8 @@ class WorkerProcess(Process):
 
                                 if task_properties[2] == STATEFUL_METHOD_SIGNAL:
 
+                                    self.print("MODE: NORMAL, STATEFUL", 1)
+
                                     result = func(self, *args, **kwargs)
 
                                 elif task_properties[2] == STATELESS_METHOD_SIGNAL:
@@ -147,27 +173,18 @@ class WorkerProcess(Process):
                                 == PANDAS_PARTITION_TASK_REQUEST_SIGNAL
                             ):
 
-                                if task_properties[1] == FORKED_PROCESS_SIGNAL:
-
-                                    # If we are using ``apply`` method, the ``func`` is required to have the
-                                    # dataframe as its first positional argument.
-                                    result = func(self.dataframe, *args, **kwargs)
-
-                                elif task_properties[1] == SPAWNED_PROCESS_SIGNAL:
-
-                                    # read and then pas sin
-                                    pass
+                                # If we are using ``apply`` method, the ``func`` is required to have the
+                                # dataframe as its first positional argument.
+                                result = func(self.dataframe, *args, **kwargs)
 
                             elif (
                                 task_properties[0]
                                 == PANDAS_NONPARTITION_TASK_REQUEST_SIGNAL
                             ):
 
-                                if task_properties[1] == FORKED_PROCESS_SIGNAL:
-
-                                    # If we are using ``apply`` method, the ``func`` is required to have the
-                                    # dataframe as its first positional argument.
-                                    result = func(self.dataframe, *args, **kwargs)
+                                # If we are using ``apply`` method, the ``func`` is required to have the
+                                # dataframe as its first positional argument.
+                                result = func(self.dataframe, *args, **kwargs)
 
                             else:
 

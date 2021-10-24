@@ -7,6 +7,7 @@ import warnings
 from collections import defaultdict
 from multiprocessing import set_start_method
 from random import randint
+import tempfile
 
 import cloudpickle
 import feather
@@ -38,9 +39,11 @@ class Futures:
     Once the worker finishes the task, it will send the results message to the server,
     which will in turn send the message back to the client in the main process.
 
+
                                                                       worker (client)
     client <--asynch msg queue--> proxy server <--asynch msg queue--> worker (client)
                                                                       worker (client)
+
     
     There are 5 different ways to submit the user functions:
 
@@ -117,6 +120,7 @@ class Futures:
         self.server_client_online = False
         self.mode = "normal"
         self.sub_mode = defaultdict(bool)
+        self.temp_dir = None
 
     def print(self, s, lvl):
 
@@ -145,8 +149,14 @@ class Futures:
 
             else:
 
+                # If forked, passing ``self.dataframe`` won't create a copy.
+                # 
                 worker_proc = WorkerProcess(
-                    __verbose__=self.verbose, __dataframe__=self.dataframe
+                    verbose=self.verbose, 
+                    dataframe=self.dataframe, 
+                    forked=self.start_method=="fork", 
+                    mode=self.mode,
+                    partition=self.sub_mode["partition"]
                 )
 
             worker_proc.daemon = True
@@ -224,7 +234,7 @@ class Futures:
         self._failed_tasks = dict()
         self.sub_mode = defaultdict(bool)
 
-    def apply_to(self, dataframe, groupby=None, orderby=None, fork=True):
+    def apply_to(self, dataframe, groupby=None, orderby=None):
         """Prepare the dataframe for parallel processing. This procedure
         depends on the process start method.
 
@@ -246,7 +256,6 @@ class Futures:
 
         orderby : str
 
-        fork : boolean
         """
 
         self.mode = "pandas"
@@ -280,9 +289,9 @@ class Futures:
                 dataframe.reset_index(drop=True, inplace=True)
                 dataframe = dataframe.copy(deep=False)
 
-        if fork:
+        if self.start_method == "fork":
 
-            set_start_method("fork", force=True)
+            set_start_method(self.start_method, force=True)
 
             if groupby:
 
@@ -294,32 +303,48 @@ class Futures:
 
         # If the processes are not forked, then write the dataframe on disk.
         # If groupby, then use forking to write the dataframe partitions in
-        # paraellel.
+        # parallel.
         else:
 
-            global global_dataframe
-            global_dataframe = dataframe
+            assert self.start_method in ["spawn", "forkserver"]
+            set_start_method(self.start_method, force=True)
 
-            def write_dataframe(key=None):
+            if self.sub_mode["partition"]:
 
-                global global_dataframe
+                pass
 
-                if isinstance(global_dataframe, dict):
+            else:
 
-                    filename = "".join([TMP_FILENAME, str(key)])
-                    filepath = os.path.join(os.getcwd(), filename)
+                cur_dirpath = os.getcwd()
+                temp_filepath = os.path.join(cur_dirpath, '__futures_zero_dataframe__')
+                feather.write_dataframe(dataframe, temp_filepath)
 
-                    feather.write_dataframe(global_dataframe[key], filepath)
+                self.dataframe = temp_filepath
 
-                else:
+            # if groupby:
 
-                    print(global_dataframe)
+            #     global global_dataframe
+            #     global_dataframe = dataframe
 
-            if groupby:
+            #     def write_dataframe(key=None):
 
-                for key in dataframe.keys():
+            #         global global_dataframe
 
-                    self.submit_keyed(key, write_dataframe, key)
+            #         if isinstance(global_dataframe, dict):
+
+            #             filename = "".join([TMP_FILENAME, str(key)])
+            #             filepath = os.path.join(os.getcwd(), filename)
+
+            #             feather.write_dataframe(global_dataframe[key], filepath)
+
+            #         else:
+
+            #             print(global_dataframe)
+
+
+            #     for key in dataframe.keys():
+
+            #         self.submit_keyed(key, write_dataframe, key)
 
     def apply(self, func, __key__=None, *args, **kwargs):
         """Apply the user function on the Pandas dataframe passed in the ``apply_to``
@@ -398,7 +423,7 @@ class Futures:
 
         func : Python method
         """
-        self.submit(func, *args, key, __stateful__, **kwargs)
+        self.submit(func, *args, __key__=key, __stateful__=__stateful__, **kwargs)
 
     def submit_stateful(self, func, *args, __key__=None, **kwargs):
         """Same as ``submit`` but the user method signature has a requirement
@@ -412,7 +437,7 @@ class Futures:
 
         __key__ : Python object
         """
-        self.submit(func, *args, __key__, True, **kwargs)
+        self.submit(func, *args, __key__=__key__, __stateful__=True, **kwargs)
 
     def _serialize(self, key, stateful, func, *args, **kwargs):
         """The ``func`` method is serialized using cloudpickle. The arguments
@@ -619,42 +644,94 @@ class Futures:
                         metadata["shape"]
                     )
 
-                    # If ``capply`` was called, append the array as a column to the input dataframe.
-                    if self.mode == "pandas" and self.sub_mode["column"]:
+                    if self.mode == "pandas":
 
-                        if not self.sub_mode["partition"]:
+                       # If ``capply`` was called, append the array as a column to the input dataframe.
+                        if self.sub_mode["column"]:
 
-                            if (
-                                (isinstance(result, np.ndarray))
-                                & (len(result) == len(self.dataframe))
-                                & (not isinstance(task_key, int))
-                            ):
+                            # If groupby was not used
+                            if not self.sub_mode["partition"]:
 
-                                if isinstance(task_key, tuple) & (
-                                    result.shape[1] == len(task_key)
+                                self.print("9. MODE: PANDAS, SUBMODES: COLUMN\n\n", 1,)
+
+                                if (
+                                    (isinstance(result, np.ndarray))
+                                    & (len(result) == len(self.dataframe))
+                                    & (not isinstance(task_key, int))
                                 ):
-                                    res_df = pd.DataFrame(result, columns=task_key)
-                                    self.dataframe = self.dataframe.join(res_df)
+
+                                    # If the ``column`` was made of multiple column names.
+                                    if isinstance(task_key, tuple):
+
+                                        # Only if the number of returned columns equals the suggested
+                                        # number of columns.
+                                        if result.shape[1] == len(task_key):
+
+                                            res_df = pd.DataFrame(result, columns=task_key)
+                                            self.dataframe = self.dataframe.join(res_df)
+                                            self.results[task_key] = None
+
+                                        else:
+
+                                            warning_msg = "The resulting column could not be attached to " \
+                                                "the dataframe because result has different number of columns. " \
+                                                "Recording the results in 'results' dict"
+                                            warnings.warn(warning_msg)
+
+                                            self.results[task_key] = result
+
+                                    # If the ``column`` was a single column name.
+                                    else:
+
+                                        # Only if the returned array is 1-dimensional.
+                                        if len(result.shape)==1:
+
+                                            self.dataframe[task_key] = result
+                                            self.results[task_key] = None
+
+                                        else:
+
+                                            warning_msg = "The resulting column could not be attached to " \
+                                                "the dataframe because result has too many columns. " \
+                                                "Recording the results in 'results' dict"
+                                            warnings.warn(warning_msg)
+
+                                            self.results[task_key] = result
+
+                                # Either the result is not ndarray or
+                                # the length of the returned array is not the same as the dataframe's or
+                                # task_key is an integer value.
                                 else:
-                                    self.dataframe[task_key] = result
 
-                                self.results[task_key] = None
+                                    warning_msg = "The resulting column could not be attached to " \
+                                        "the dataframe. Recording the results in 'results' dict"
+                                    warnings.warn(warning_msg)
 
+                                    self.results[task_key] = result
+
+                            # If groupby was used
                             else:
 
-                                warning_msg = "The resulting column could not be attached to " \
-                                    "the dataframe. Recording the results in 'results' dict"
-                                warnings.warn(warning_msg)
+                                self.print("9. MODE: PANDAS, SUBMODES: COLUMN, PARTITION\n\n", 1,)
 
-                                self.results[task_key] = result
+                                raise NotImplementedError("Parition submode is not yet supported")
+
+                        # If only ``apply`` was called and not ``capply``.
+                        else:
+
+                            self.print("9. MODE: PANDAS, SUBMODES:\n\n", 1,)
+
+                            self.results[task_key] = result
 
                     elif self.mode == "normal":
+
+                        self.print("9. MODE: NORMAL, SUBMODES:\n\n", 1,)
 
                         self.results[task_key] = result
 
                     self.bar.report(len(self.results))
 
-                    # Remove the task from pending status only after checking the results.
+                    # Remove the task from pending status.
                     self._pending_tasks.pop(task_key, None)
 
                 elif reply_payload[0] == TASK_FAILURE_SIGNAL:
@@ -669,6 +746,9 @@ class Futures:
 
                     self._handle_failed_tasks(task_key, error_msg)
 
+                # If worker failure message was sent from this client to the server (refer below)
+                # 1. restart the number of failed worker processes
+                # 2. retry the unfinished tasks as needed.
                 elif reply_payload[0] == WORKER_FAILURE_SIGNAL:
 
                     self.print(f"8. RECEIVED IN CLIENT FROM SERVER: {reply}\n", 2)
