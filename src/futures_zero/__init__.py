@@ -1,4 +1,4 @@
-__version__ = "0.0.b3"
+__version__ = "0.0.b4"
 
 from .futures import Futures
 from .server import ServerProcess
