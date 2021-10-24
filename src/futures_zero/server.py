@@ -78,7 +78,7 @@ class ServerProcess(Process):
     Parameters
     ----------
     client_address : str
-
+        
     verbose : int
     """
 
@@ -265,6 +265,11 @@ class ServerProcess(Process):
                     # [client_address, dummy_task_key, worker_failure_signal]
                     # if any worker process termination is detected from futures client.
                     frames = frontend.recv_multipart()
+
+                    self.print(
+                        "2. RECEIVED IN SERVER FROM CLIENT RAW: {}\n\n".format(frames),
+                        3,
+                    )
 
                     # Interrupted
                     if not frames:
