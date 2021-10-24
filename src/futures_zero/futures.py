@@ -311,7 +311,7 @@ class Futures:
 
             if self.sub_mode["partition"]:
 
-                pass
+                raise NotImplementedError("groupby is not yet supported.")
 
             else:
 
@@ -320,31 +320,6 @@ class Futures:
                 feather.write_dataframe(dataframe, temp_filepath)
 
                 self.dataframe = temp_filepath
-
-            # if groupby:
-
-            #     global global_dataframe
-            #     global_dataframe = dataframe
-
-            #     def write_dataframe(key=None):
-
-            #         global global_dataframe
-
-            #         if isinstance(global_dataframe, dict):
-
-            #             filename = "".join([TMP_FILENAME, str(key)])
-            #             filepath = os.path.join(os.getcwd(), filename)
-
-            #             feather.write_dataframe(global_dataframe[key], filepath)
-
-            #         else:
-
-            #             print(global_dataframe)
-
-
-            #     for key in dataframe.keys():
-
-            #         self.submit_keyed(key, write_dataframe, key)
 
     def apply(self, func, __key__=None, *args, **kwargs):
         """Apply the user function on the Pandas dataframe passed in the ``apply_to``
