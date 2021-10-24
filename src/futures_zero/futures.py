@@ -383,6 +383,11 @@ class Futures:
         func : Python method
 
         column : str or list or str
+
+        args : Python objects
+            Positional arguments
+
+        
         """
         self.sub_mode["column"] = True
 
