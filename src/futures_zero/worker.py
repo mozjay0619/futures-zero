@@ -152,6 +152,9 @@ class WorkerProcess(Process):
                         args_binary = task_payload[1]
                         args, kwargs = msgpack.unpackb(args_binary, raw=False)
 
+                        self.print("ARGS: {}\n\n".format(args), 3)
+                        self.print("KWARGS: {}\n\n".format(kwargs), 3)
+
                         # Try to catch user function exception without disturbing the process if possible.
                         try:
 
