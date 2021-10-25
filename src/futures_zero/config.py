@@ -1,4 +1,4 @@
-REQUEST_TIMEOUT = 5000
+REQUEST_TIMEOUT = 2500
 
 #  Paranoid Pirate Protocol constants
 WORKER_READY_SIGNAL = b"\x01"  # Signals worker is ready
