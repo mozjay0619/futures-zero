@@ -15,6 +15,7 @@ class WorkerQueue(object):
     worker is busy processing which task key. The set of all worker
     address is used by, for instance, kill command.
     """
+
     def __init__(self):
         self.free_workers = list()
         self.busy_workers = dict()
@@ -78,7 +79,7 @@ class ServerProcess(Process):
     Parameters
     ----------
     client_address : str
-        
+
     verbose : int
     """
 

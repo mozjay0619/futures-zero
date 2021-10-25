@@ -2,12 +2,12 @@ import itertools
 import logging
 import os
 import sys
+import tempfile
 import time
 import warnings
 from collections import defaultdict
 from multiprocessing import set_start_method
 from random import randint
-import tempfile
 
 import cloudpickle
 import feather
@@ -44,7 +44,7 @@ class Futures:
     client <--asynch msg queue--> proxy server <--asynch msg queue--> worker (client)
                                                                       worker (client)
 
-    
+
     There are 5 different ways to submit the user functions:
 
     - submit
@@ -100,7 +100,7 @@ class Futures:
         self.worker = worker
         self.worker_args = worker_args
         self.worker_kwargs = worker_kwargs
-        
+
         self.worker_procs = []
 
         if n_workers is None:
@@ -144,7 +144,7 @@ class Futures:
                 worker_proc = self.worker(
                     __verbose__=self.verbose,
                     __dataframe__=self.dataframe,
-                    __forked__=self.start_method=="fork", 
+                    __forked__=self.start_method == "fork",
                     __mode__=self.mode,
                     __partition__=self.sub_mode["partition"],
                     *self.worker_args,
@@ -154,13 +154,13 @@ class Futures:
             else:
 
                 # If forked, passing ``self.dataframe`` won't create a copy.
-                # 
+                #
                 worker_proc = WorkerProcess(
-                    __verbose__=self.verbose, 
-                    __dataframe__=self.dataframe, 
-                    __forked__=self.start_method=="fork", 
+                    __verbose__=self.verbose,
+                    __dataframe__=self.dataframe,
+                    __forked__=self.start_method == "fork",
                     __mode__=self.mode,
-                    __partition__=self.sub_mode["partition"]
+                    __partition__=self.sub_mode["partition"],
                 )
 
             worker_proc.daemon = True
@@ -321,7 +321,7 @@ class Futures:
             else:
 
                 cur_dirpath = os.getcwd()
-                temp_filepath = os.path.join(cur_dirpath, '__futures_zero_dataframe__')
+                temp_filepath = os.path.join(cur_dirpath, "__futures_zero_dataframe__")
                 feather.write_dataframe(dataframe, temp_filepath)
 
                 self.dataframe = temp_filepath
@@ -345,7 +345,6 @@ class Futures:
             #         else:
 
             #             print(global_dataframe)
-
 
             #     for key in dataframe.keys():
 
@@ -670,14 +669,21 @@ class Futures:
                     )
 
                     if self.mode == "pandas":
-                        
+
                         # If ``capply`` was called, append the array as a column to the input dataframe.
-                        if self.sub_mode["column"] and self.sub_mode_secondary_checker.get(task_key)=="column":
+                        if (
+                            self.sub_mode["column"]
+                            and self.sub_mode_secondary_checker.get(task_key)
+                            == "column"
+                        ):
 
                             # If groupby was not used
                             if not self.sub_mode["partition"]:
 
-                                self.print("9. MODE: PANDAS, SUBMODES: COLUMN\n\n", 1,)
+                                self.print(
+                                    "9. MODE: PANDAS, SUBMODES: COLUMN\n\n",
+                                    1,
+                                )
 
                                 if (
                                     (isinstance(result, np.ndarray))
@@ -692,15 +698,19 @@ class Futures:
                                         # number of columns.
                                         if result.shape[1] == len(task_key):
 
-                                            res_df = pd.DataFrame(result, columns=task_key)
+                                            res_df = pd.DataFrame(
+                                                result, columns=task_key
+                                            )
                                             self.dataframe = self.dataframe.join(res_df)
                                             self.results[task_key] = None
 
                                         else:
 
-                                            warning_msg = "The resulting column could not be attached to " \
-                                                "the dataframe because result has different number of columns. " \
+                                            warning_msg = (
+                                                "The resulting column could not be attached to "
+                                                "the dataframe because result has different number of columns. "
                                                 "Recording the results in 'results' dict"
+                                            )
                                             warnings.warn(warning_msg)
 
                                             self.results[task_key] = result
@@ -709,16 +719,18 @@ class Futures:
                                     else:
 
                                         # Only if the returned array is 1-dimensional.
-                                        if len(result.shape)==1:
+                                        if len(result.shape) == 1:
 
                                             self.dataframe[task_key] = result
                                             self.results[task_key] = None
 
                                         else:
 
-                                            warning_msg = "The resulting column could not be attached to " \
-                                                "the dataframe because result has too many columns. " \
+                                            warning_msg = (
+                                                "The resulting column could not be attached to "
+                                                "the dataframe because result has too many columns. "
                                                 "Recording the results in 'results' dict"
+                                            )
                                             warnings.warn(warning_msg)
 
                                             self.results[task_key] = result
@@ -728,11 +740,13 @@ class Futures:
                                 # task_key is an integer value.
                                 else:
 
-                                    print(result, '+++')
-                                    print(task_key, '+++')
+                                    print(result, "+++")
+                                    print(task_key, "+++")
 
-                                    warning_msg = "The resulting column could not be attached to " \
+                                    warning_msg = (
+                                        "The resulting column could not be attached to "
                                         "the dataframe. Recording the results in 'results' dict"
+                                    )
                                     warnings.warn(warning_msg)
 
                                     self.results[task_key] = result
@@ -740,20 +754,31 @@ class Futures:
                             # If groupby was used
                             else:
 
-                                self.print("9. MODE: PANDAS, SUBMODES: COLUMN, PARTITION\n\n", 1,)
+                                self.print(
+                                    "9. MODE: PANDAS, SUBMODES: COLUMN, PARTITION\n\n",
+                                    1,
+                                )
 
-                                raise NotImplementedError("Parition submode is not yet supported")
+                                raise NotImplementedError(
+                                    "Parition submode is not yet supported"
+                                )
 
                         # If only ``apply`` was called and not ``capply``.
                         else:
 
-                            self.print("9. MODE: PANDAS, SUBMODES:\n\n", 1,)
+                            self.print(
+                                "9. MODE: PANDAS, SUBMODES:\n\n",
+                                1,
+                            )
 
                             self.results[task_key] = result
 
                     elif self.mode == "normal":
 
-                        self.print("9. MODE: NORMAL, SUBMODES:\n\n", 1,)
+                        self.print(
+                            "9. MODE: NORMAL, SUBMODES:\n\n",
+                            1,
+                        )
 
                         self.results[task_key] = result
 

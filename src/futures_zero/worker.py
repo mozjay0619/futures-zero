@@ -6,12 +6,12 @@ from multiprocessing import Process
 from random import randint
 
 import cloudpickle
+import feather
 import msgpack
 import numpy as np
 import pandas as pd
 import zmq
 from zmq.error import ZMQError
-import feather
 
 from .config import *
 
@@ -35,13 +35,13 @@ def worker_socket(context, poller):
 class WorkerProcess(Process):
     """The process for the worker client that connects to the server and carries
     out the requested computations in parallel. The user function can access its
-    state if needed. The underscore is for when the user wishes to subclass the 
+    state if needed. The underscore is for when the user wishes to subclass the
     BaseWorker.
 
     Parameters
     ----------
     verbose : int
-        Available input values: 
+        Available input values:
         - 0: no output
         - 1: show message titles
         - 2: show message contents
@@ -49,21 +49,22 @@ class WorkerProcess(Process):
     dataframe : Pandas dataframe or None
         Used if ``apply`` method is invoked.
     """
+
     def __init__(
-        self, 
-        __verbose__, 
-        __dataframe__=None, 
-        __forked__=True, 
-        __mode__="normal", 
-        __partition__=False, 
-        *args, 
+        self,
+        __verbose__,
+        __dataframe__=None,
+        __forked__=True,
+        __mode__="normal",
+        __partition__=False,
+        *args,
         **kwargs
-        ):
+    ):
         super(WorkerProcess, self).__init__()
 
         self.__verbose__ = __verbose__
 
-        if __mode__=="pandas":
+        if __mode__ == "pandas":
 
             if __forked__:
 
