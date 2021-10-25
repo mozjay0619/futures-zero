@@ -15,5 +15,5 @@ Message Queuing Pattern
 .. raw:: html
 
    <p align="center">
-	  <img width="400pt" src="https://github.com/mozjay0619/futures-zero/blob/master/media/image1.png">
+	  <img width="450pt" src="https://github.com/mozjay0619/futures-zero/blob/master/media/image1.png">
 	</p>
