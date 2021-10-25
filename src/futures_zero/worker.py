@@ -8,6 +8,7 @@ from random import randint
 import cloudpickle
 import msgpack
 import numpy as np
+import pandas as pd
 import zmq
 from zmq.error import ZMQError
 import feather
@@ -34,7 +35,8 @@ def worker_socket(context, poller):
 class WorkerProcess(Process):
     """The process for the worker client that connects to the server and carries
     out the requested computations in parallel. The user function can access its
-    state if needed.
+    state if needed. The underscore is for when the user wishes to subclass the 
+    BaseWorker.
 
     Parameters
     ----------
@@ -47,34 +49,43 @@ class WorkerProcess(Process):
     dataframe : Pandas dataframe or None
         Used if ``apply`` method is invoked.
     """
-    def __init__(self, verbose, dataframe=None, forked=True, mode="normal", partition=False, *args, **kwargs):
+    def __init__(
+        self, 
+        __verbose__, 
+        __dataframe__=None, 
+        __forked__=True, 
+        __mode__="normal", 
+        __partition__=False, 
+        *args, 
+        **kwargs
+        ):
         super(WorkerProcess, self).__init__()
 
-        self.verbose = verbose
+        self.__verbose__ = __verbose__
 
-        if mode=="pandas":
+        if __mode__=="pandas":
 
-            if forked:
+            if __forked__:
 
-                self.dataframe = dataframe
+                self.__dataframe__ = __dataframe__
 
             else:
 
-                if partition:
+                if __partition__:
 
                     pass
 
                 else:
 
-                    self.dataframe = feather.read_dataframe(dataframe)
+                    self.__dataframe__ = feather.read_dataframe(__dataframe__)
 
         else:
 
-            self.dataframe = None
+            self.__dataframe__ = None
 
     def print(self, s, lvl):
 
-        if self.verbose >= lvl:
+        if self.__verbose__ >= lvl:
             print(s)
 
     def run(self):
@@ -178,7 +189,10 @@ class WorkerProcess(Process):
 
                                 # If we are using ``apply`` method, the ``func`` is required to have the
                                 # dataframe as its first positional argument.
-                                result = func(self.dataframe, *args, **kwargs)
+                                result = func(self.__dataframe__, *args, **kwargs)
+
+                                if isinstance(result, (pd.DataFrame, pd.Series)):
+                                    result = result.values
 
                             elif (
                                 task_properties[0]
@@ -187,7 +201,10 @@ class WorkerProcess(Process):
 
                                 # If we are using ``apply`` method, the ``func`` is required to have the
                                 # dataframe as its first positional argument.
-                                result = func(self.dataframe, *args, **kwargs)
+                                result = func(self.__dataframe__, *args, **kwargs)
+
+                                if isinstance(result, (pd.DataFrame, pd.Series)):
+                                    result = result.values
 
                             else:
 
@@ -195,7 +212,7 @@ class WorkerProcess(Process):
 
                             # Communicate the results back to the server.
                             # If the result is a numpy n-dim array, use memory buffer for messaging.
-                            if isinstance(result, np.ndarray):
+                            if isinstance(result, (np.ndarray, np.generic)):
 
                                 if not result.flags["C_CONTIGUOUS"]:
                                     result = np.ascontiguousarray(result)

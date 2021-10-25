@@ -78,7 +78,7 @@ class Futures:
     worker_kwargs : dict
         The keyword arguments for the WorkerProcess.
 
-    request_retries : int
+    n_retries : int
         The number of retries for any given task.
     """
 
@@ -87,20 +87,20 @@ class Futures:
         n_workers=None,
         start_method="fork",
         verbose=0,
+        n_retries=2,
         worker=None,
-        worker_args=[],
-        worker_kwargs={},
-        request_retries=2,
+        *worker_args,
+        **worker_kwargs,
     ):
 
         self.n_workers = n_workers
         self.start_method = start_method
         self.verbose = verbose
+        self.request_retries = n_retries
         self.worker = worker
         self.worker_args = worker_args
         self.worker_kwargs = worker_kwargs
-        self.request_retries = request_retries
-
+        
         self.worker_procs = []
 
         if n_workers is None:
@@ -120,6 +120,7 @@ class Futures:
         self.server_client_online = False
         self.mode = "normal"
         self.sub_mode = defaultdict(bool)
+        self.sub_mode_secondary_checker = dict()
         self.temp_dir = None
 
     def print(self, s, lvl):
@@ -141,8 +142,11 @@ class Futures:
             if self.worker is not None:
 
                 worker_proc = self.worker(
-                    self.verbose,
-                    self.dataframe,
+                    __verbose__=self.verbose,
+                    __dataframe__=self.dataframe,
+                    __forked__=self.start_method=="fork", 
+                    __mode__=self.mode,
+                    __partition__=self.sub_mode["partition"],
                     *self.worker_args,
                     **self.worker_kwargs,
                 )
@@ -152,11 +156,11 @@ class Futures:
                 # If forked, passing ``self.dataframe`` won't create a copy.
                 # 
                 worker_proc = WorkerProcess(
-                    verbose=self.verbose, 
-                    dataframe=self.dataframe, 
-                    forked=self.start_method=="fork", 
-                    mode=self.mode,
-                    partition=self.sub_mode["partition"]
+                    __verbose__=self.verbose, 
+                    __dataframe__=self.dataframe, 
+                    __forked__=self.start_method=="fork", 
+                    __mode__=self.mode,
+                    __partition__=self.sub_mode["partition"]
                 )
 
             worker_proc.daemon = True
@@ -224,7 +228,7 @@ class Futures:
 
                 proc.terminate()
 
-    def clean(self):
+    def clear(self):
         """Clean out the computation results and data from memory."""
         self.dataframe = None
         self._task_keys = set()
@@ -233,6 +237,7 @@ class Futures:
         self.errors = dict()
         self._failed_tasks = dict()
         self.sub_mode = defaultdict(bool)
+        self.sub_mode_secondary_checker = dict()
 
     def apply_to(self, dataframe, groupby=None, orderby=None):
         """Prepare the dataframe for parallel processing. This procedure
@@ -346,7 +351,7 @@ class Futures:
 
             #         self.submit_keyed(key, write_dataframe, key)
 
-    def apply(self, func, __key__=None, *args, **kwargs):
+    def apply(self, func, *args, __key__=None, **kwargs):
         """Apply the user function on the Pandas dataframe passed in the ``apply_to``
         method. The ``func`` method signature requires the dataframe as the first
         positional argument.
@@ -368,7 +373,7 @@ class Futures:
 
         self._submit(key, binary)
 
-    def capply(self, func, column=None, *args, **kwargs):
+    def capply(self, column=None, func=None, *args, **kwargs):
         """``capply`` stands for column-apply. Same as the ``apply`` method,
         but the ``func`` method has an additional requirement that the return
         value is the numpy array with the same length as the dataframe. That
@@ -387,13 +392,17 @@ class Futures:
         args : Python objects
             Positional arguments
 
-        
         """
         self.sub_mode["column"] = True
 
         key = column or len(self._task_keys)
 
-        self.apply(func, key, *args, **kwargs)
+        if isinstance(key, list):
+            key = tuple(key)
+
+        self.sub_mode_secondary_checker[key] = "column"
+
+        self.apply(func, *args, __key__=key, **kwargs)
 
     def submit(self, func, *args, __key__=None, __stateful__=False, **kwargs):
         """Pass in user func to compute in parallel.
@@ -443,6 +452,17 @@ class Futures:
         __key__ : Python object
         """
         self.submit(func, *args, __key__=__key__, __stateful__=True, **kwargs)
+
+    def submit_stateful_keyed(self, key, func, *args, **kwargs):
+        """Utility function combining ``submit_keyed`` and ``submit_stateful``.
+
+        Parameters
+        ----------
+        func : Python method
+
+        key : Python object
+        """
+        self.submit(func, *args, __key__=key, __stateful__=True, **kwargs)
 
     def _serialize(self, key, stateful, func, *args, **kwargs):
         """The ``func`` method is serialized using cloudpickle. The arguments
@@ -553,7 +573,7 @@ class Futures:
         """
         self._fail_counter[task_key] += 1
 
-        if self._fail_counter[task_key] < self.request_retries:
+        if self._fail_counter[task_key] < self.request_retries + 1:
 
             self.print(
                 f"9. TASK {task_key} FAILED {self._fail_counter[task_key]} TIME(S), RETRYING\n\n",
@@ -650,9 +670,9 @@ class Futures:
                     )
 
                     if self.mode == "pandas":
-
-                       # If ``capply`` was called, append the array as a column to the input dataframe.
-                        if self.sub_mode["column"]:
+                        
+                        # If ``capply`` was called, append the array as a column to the input dataframe.
+                        if self.sub_mode["column"] and self.sub_mode_secondary_checker.get(task_key)=="column":
 
                             # If groupby was not used
                             if not self.sub_mode["partition"]:
@@ -707,6 +727,9 @@ class Futures:
                                 # the length of the returned array is not the same as the dataframe's or
                                 # task_key is an integer value.
                                 else:
+
+                                    print(result, '+++')
+                                    print(task_key, '+++')
 
                                     warning_msg = "The resulting column could not be attached to " \
                                         "the dataframe. Recording the results in 'results' dict"
