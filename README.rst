@@ -13,4 +13,4 @@ Message Queuing Pattern
 -----------------------
 
 .. image:: https://github.com/mozjay0619/futures-zero/blob/master/media/image1.png
-	:width: 600pt
+	:width: 400pt
