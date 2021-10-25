@@ -372,7 +372,11 @@ class Futures:
 
         self._submit(key, binary)
 
-    def capply(self, column=None, func=None, *args, **kwargs):
+    def apply_keyed(self, key, func, *args, **kwargs):
+
+        self.apply(func, __key__=key, *args, **kwargs)
+
+    def capply(self, column, func, *args, **kwargs):
         """``capply`` stands for column-apply. Same as the ``apply`` method,
         but the ``func`` method has an additional requirement that the return
         value is the numpy array with the same length as the dataframe. That
