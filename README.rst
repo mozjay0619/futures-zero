@@ -12,8 +12,8 @@ Install
 Message Queuing Pattern
 -----------------------
 
-.. raw:: html
-
-   <p align="center">
-	  <img width="470pt" src="https://github.com/mozjay0619/futures-zero/blob/master/media/image1.png">
-	</p>
+.. image:: https://github.com/mozjay0619/futures-zero/blob/master/media/image1.png
+   :target: https://github.com/mozjay0619/futures-zero/blob/master/media/image1.png
+   :align: center
+   :alt: sysfs line plot
+   :width: 600px
