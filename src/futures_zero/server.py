@@ -89,6 +89,10 @@ class ServerProcess(Process):
         self.client_address = client_address
         self.verbose = verbose
 
+        self.client_online = False
+
+        self.print("SERVER PROCESS STARTED\n", 1)
+
     def print(self, s, lvl):
 
         if self.verbose >= lvl:
@@ -96,7 +100,7 @@ class ServerProcess(Process):
 
     def run(self):
 
-        context = zmq.Context(1)
+        context = zmq.Context()
 
         # Frontend server socket (to talk to client)
         frontend = context.socket(zmq.ROUTER)
@@ -115,8 +119,29 @@ class ServerProcess(Process):
         poll_both.register(frontend, zmq.POLLIN)
         poll_both.register(backend, zmq.POLLIN)
 
+        self.print("SERVER CONTEXT STARTED\n", 1)
+
         # Queue of LRU workers
         workers = WorkerQueue()
+
+        # Establish connection with client with a handshake.
+        while not self.client_online:
+
+            msg = [self.client_address, SERVER_READY_SIGNAL]
+            frontend.send_multipart(msg)
+
+            self.print("SENDING SERVER READY SIGNAL...\n", 1)
+
+            # Start listening to replies from the server
+            if (frontend.poll(50) & zmq.POLLIN) != 0:
+
+                # The DEALER socket prepended the client address.
+                # [client_address, client_ready_signal]
+                reply = frontend.recv_multipart()
+
+                if reply[1] == CLIENT_READY_SIGNAL:
+
+                    self.client_online = True
 
         try:
 
@@ -180,7 +205,7 @@ class ServerProcess(Process):
                                 "6. RECEIVED IN SERVER FROM WORKER: {}\n".format(
                                     frames
                                 ),
-                                2,
+                                3,
                             )
                             self.print(
                                 "6. RECEIVED IN SERVER FROM WORKER: [worker_address, client_address, task_key, task_success_signal, result]\n\n",
@@ -191,7 +216,7 @@ class ServerProcess(Process):
                                 "7. SENDING FROM SERVER TO CLIENT: {}\n".format(
                                     reply_payload
                                 ),
-                                2,
+                                3,
                             )
                             self.print(
                                 "7. SENDING FROM SERVER TO CLIENT: [client_address, task_key, task_success_signal, result]\n\n",
@@ -204,7 +229,7 @@ class ServerProcess(Process):
                                 "6. RECEIVED IN SERVER FROM WORKER: {}\n".format(
                                     frames
                                 ),
-                                2,
+                                3,
                             )
                             self.print(
                                 "6. RECEIVED IN SERVER FROM WORKER: [worker_address, client_address, task_key, numpy_task_success_signal, metadata, result]\n\n",
@@ -215,7 +240,7 @@ class ServerProcess(Process):
                                 "7. SENDING FROM SERVER TO CLIENT: {}\n".format(
                                     reply_payload
                                 ),
-                                2,
+                                3,
                             )
                             self.print(
                                 "7. SENDING FROM SERVER TO CLIENT: [client_address, task_key, numpy_task_success_signal, metadata, result]\n\n",
@@ -250,9 +275,9 @@ class ServerProcess(Process):
                         workers.free(address)
                         workers.ready(address)
 
+                        # The ROUTER socket will strip off the client address.
                         # [client_address, task_key, task_success_signal, result] or
                         # [client_address, task_key, task_failure_signal, error]
-                        # The ROUTER socket will strip off the client address.
                         frontend.send_multipart(reply_payload)
 
                 # Get message from the frontend client.
@@ -388,3 +413,5 @@ class ServerProcess(Process):
                 backend.close()
 
                 context.term()
+
+                self.print("GRACEFULLY TERMINATING SERVER\n", 1)

@@ -117,11 +117,13 @@ class Futures:
         self._failed_tasks = dict()
         self._fail_counter = defaultdict(int)
 
-        self.server_client_online = False
+        self.server_online = False
         self.mode = "normal"
         self.sub_mode = defaultdict(bool)
         self.sub_mode_secondary_checker = dict()
         self.temp_dir = None
+
+        self.client_address = str(os.getpid()).encode()
 
     def print(self, s, lvl):
 
@@ -154,7 +156,6 @@ class Futures:
             else:
 
                 # If forked, passing ``self.dataframe`` won't create a copy.
-                #
                 worker_proc = WorkerProcess(
                     __verbose__=self.verbose,
                     __dataframe__=self.dataframe,
@@ -178,7 +179,6 @@ class Futures:
         """Connect the client socket to the server endpoint. Assign the
         client the string address (the current process's PID).
         """
-        self.client_address = str(os.getpid()).encode()
         self.context = zmq.Context()
         self.client = self.context.socket(zmq.DEALER)
         self.client.setsockopt(zmq.IDENTITY, self.client_address)
@@ -187,15 +187,39 @@ class Futures:
         self.print("CLIENT STARTED: {}\n\n".format(self.client_address), 1)
 
     def start(self):
-        """Utility function to start the processes and bind the sockets.
-        Also, the ``server_client_online`` flag is set to True, so that the
-        Futures object knows not to restart the processes.
+        """Utility function to start the processes and bind the sockets. The
+        connection to server will be established with a handshake. Also, the
+        ``server_online`` flag is set to True, so that the Futures object knows
+        not to restart the processes.
         """
         self.start_workers(self.n_workers)
-        self.start_client()
         self.start_server()
+        self.start_client()
 
-        self.server_client_online = True
+        # Synchronize server and client with a handshake.
+        while not self.server_online:
+
+            self.print("CONNECTING TO SERVER...\n", 1)
+
+            # Start listening to replies from the server
+            if (self.client.poll(SERVER_TIMEOUT) & zmq.POLLIN) != 0:
+
+                reply = self.client.recv_multipart()
+
+                if reply[0] == SERVER_READY_SIGNAL:
+
+                    frames = [CLIENT_READY_SIGNAL]
+
+                    # The DEALER socket will prepend the client address.
+                    # [client_ready_signal]
+                    self.client.send_multipart(frames)
+
+                    self.server_online = True
+
+            # If server keeps failing, just hit KeyboardInterrupt for graceful terminations.
+            self.print("FAILED TO CONNECT TO SERVER... RETRYING...\n", 1)
+
+        self.print("CONNECTED TO SERVER!\n", 1)
 
     def close(self):
         """Gracefully terminate all the network sockets and processes with
@@ -209,7 +233,7 @@ class Futures:
         # [dummy_task_key, kill_signal]
         self.client.send_multipart(frames)
 
-        self.server_client_online = False
+        self.server_online = False
 
         close_start_time = time.time()
 
@@ -227,6 +251,12 @@ class Futures:
                 self.print("FORCEFULLY TERMINATING WORKER", 1)
 
                 proc.terminate()
+
+        self.client.setsockopt(zmq.LINGER, 0)
+        self.client.close()
+        self.context.term()
+
+        self.print("\nGRACEFULLY TERMINATING CLIENT", 1)
 
     def clear(self):
         """Clean out the computation results and data from memory."""
@@ -262,7 +292,6 @@ class Futures:
         orderby : str
 
         """
-
         self.mode = "pandas"
 
         if groupby:
@@ -550,9 +579,8 @@ class Futures:
                         4. func
                         5. args (binary of args and kwargs)
         """
-        if not self.server_client_online:
+        if not self.server_online:
             self.start()
-            time.sleep(0.05)
 
         self.print(f"1. SENDING FROM CLIENT TO SERVER: {request}\n", 2)
         self.print("** NOTE: b'\\x92\\x90\\x80' is [[], {}]\n\n", 2)
@@ -615,10 +643,14 @@ class Futures:
         processes as they died. The tasks that were never completed by those processes will
         be re-submited.
         """
+        self.print("STARTED POLLING FROM CLIENT\n", 1)
+
         while len(self.results) + len(self.errors) < len(self._task_keys):
 
             # Start listening to replies from the server
             if (self.client.poll(REQUEST_TIMEOUT) & zmq.POLLIN) != 0:
+
+                self.print("POLLING FROM CLIENT...\n", 1)
 
                 # The REQ socket stripped off the client address.
                 # [task_key, task_signal, error_msg, task_signal, task_signal, func, args] or
@@ -743,9 +775,6 @@ class Futures:
                                 # the length of the returned array is not the same as the dataframe's or
                                 # task_key is an integer value.
                                 else:
-
-                                    print(result, "+++")
-                                    print(task_key, "+++")
 
                                     warning_msg = (
                                         "The resulting column could not be attached to "

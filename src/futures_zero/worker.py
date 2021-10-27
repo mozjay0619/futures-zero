@@ -95,7 +95,7 @@ class WorkerProcess(Process):
         poller = zmq.Poller()
 
         identity, worker = worker_socket(context, poller)
-        self.print("WORKER STARTED: {}".format(identity), 1)
+        self.print("WORKER STARTED: {}\n".format(identity), 1)
 
         try:
 
@@ -327,9 +327,9 @@ class WorkerProcess(Process):
 
         finally:
 
-            self.print("GRACEFULLY TERMINATING WORKER {}".format(identity), 1)
-
             if perform_final:
+
+                self.print("GRACEFULLY TERMINATING WORKER {}\n".format(identity), 1)
 
                 poller.unregister(worker)
                 worker.setsockopt(zmq.LINGER, 0)
