@@ -196,6 +196,7 @@ class Futures:
         self.start_server()
         self.start_client()
 
+        # Synchronize server and client with a handshake.
         while not self.server_online:
 
             self.print("CONNECTING TO SERVER...\n", 1)
