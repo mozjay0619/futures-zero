@@ -95,7 +95,7 @@ class WorkerProcess(Process):
         poller = zmq.Poller()
 
         identity, worker = worker_socket(context, poller)
-        self.print("WORKER STARTED: {}".format(identity), 1)
+        self.print("WORKER STARTED: {}\n".format(identity), 1)
 
         try:
 

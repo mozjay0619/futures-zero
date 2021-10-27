@@ -118,6 +118,8 @@ class ServerProcess(Process):
         # Queue of LRU workers
         workers = WorkerQueue()
 
+        self.print("SERVER STARTED\n", 1)
+
         try:
 
             # Flag for the ``finally`` clause.
