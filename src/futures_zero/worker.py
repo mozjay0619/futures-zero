@@ -327,9 +327,9 @@ class WorkerProcess(Process):
 
         finally:
 
-            self.print("GRACEFULLY TERMINATING WORKER {}".format(identity), 1)
-
             if perform_final:
+
+                self.print("GRACEFULLY TERMINATING WORKER {}".format(identity), 1)
 
                 poller.unregister(worker)
                 worker.setsockopt(zmq.LINGER, 0)

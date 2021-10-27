@@ -377,6 +377,8 @@ class ServerProcess(Process):
 
             if perform_final:
 
+                self.print("GRACEFULLY TERMINATING SERVER {}".format(identity), 1)
+
                 poll_both.unregister(frontend)
                 poll_both.unregister(backend)
                 poll_workers.unregister(backend)
